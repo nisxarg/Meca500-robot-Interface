@@ -3,30 +3,39 @@ Meca500 GUI with Improved Error Handling
 ---------------------------------------
 Entry point for the Meca500 GUI with improved error handling.
 
+This module serves as the main entry point for the Meca500 robot control application
+with enhanced error handling capabilities.
 """
 import sys
+import traceback
 from PyQt6.QtWidgets import QApplication
-
-# Import the improved error handling
 from improved_error_handling import patch_meca_pendant
-
-# Import the original MecaPendant class
-from Test import MecaPendant
+from Test import MecaPendant    
 
 
 def main():
-    """Main entry point for the application"""
-    app = QApplication(sys.argv)
+    """
+    Main application entry point.
+    Initializes the GUI application with improved error handling.
+    """
+    try:
+        app = QApplication(sys.argv)
 
-    # Patch the MecaPendant class with improved error handling
-    ImprovedMecaPendant = patch_meca_pendant(MecaPendant)
+        # Apply error handling improvements to the MecaPendant class
+        ImprovedMecaPendant = patch_meca_pendant(MecaPendant)
 
-    # Create and show the main window
-    window = ImprovedMecaPendant()
-    window.show()
+        # Create and show the main window
+        window = ImprovedMecaPendant()
+        window.show()
 
-    # Start the event loop
-    sys.exit(app.exec())
+        # Start the application event loop
+        sys.exit(app.exec())
+
+    except Exception as e:
+        # Catch any unhandled exceptions to prevent silent crashes
+        print(f"Fatal error in main application: {e}")
+        traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
