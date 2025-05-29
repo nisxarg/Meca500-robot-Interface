@@ -8,24 +8,15 @@ Meca500 Robot Control GUI
 
 
 import sys
-import time
-import traceback
 from functools import partial
-from typing import List, Dict, Any, Optional, Tuple, Callable
-from mecademicpy.robot import Robot
-# Add these imports if not present
-
-
-# PyQt imports
+from typing import List, Callable
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QHBoxLayout,
     QSlider, QTextEdit, QGridLayout, QPushButton, QTabWidget,
     QLineEdit, QGroupBox, QMessageBox, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer
-
-
-# Joystick support
+from mecademicpy.robot import Robot
 import pygame
 
 
@@ -357,16 +348,44 @@ class MecaPendant(QWidget):
 
         right_panel.addWidget(console_label)
         right_panel.addWidget(self.console)
+        right_panel.addWidget(clear_btn)  # Directly below console
 
         # Add the programming interface
         from meca500_programming_interface import add_programming_interface_to_gui
         self.programming_interface = add_programming_interface_to_gui(self)
         right_panel.addWidget(self.programming_interface)
 
-        right_panel.addWidget(clear_btn)
+        # Add Emergency Stop button where Clear Console was before
+        emergency_btn = QPushButton("EMERGENCY STOP")
+        emergency_btn.setStyleSheet(
+            "background-color: red; color: white; font-weight: bold; font-size: 16px; padding: 10px;"
+        )
+        emergency_btn.clicked.connect(self.emergency_stop)
+        right_panel.addWidget(emergency_btn)
 
         return right_panel
 
+    def emergency_stop(self):
+        """Emergency stop handler to immediately halt the robot and warn the user"""
+        try:
+            self.robot.PauseMotion()
+            self.robot.DeactivateRobot()
+            self.log("🚨 EMERGENCY STOP triggered! Robot motion halted and deactivated.")
+
+            # Show a warning dialog to the user
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                self,
+                "Emergency Stop Activated",
+                "The robot has been halted and deactivated via software.\n\n"
+                "To recover safely:\n"
+                "1. Ensure the hardware E-Stop (red button) is RELEASED.\n"
+                "2. Power cycle the robot controller if needed.\n"
+                "3. Close and restart this application after the robot is powered up.\n\n"
+                "If the robot cannot reconnect, check cables and hardware E-Stop."
+            )
+        except Exception as e:
+            self.log(f"[ERROR] Emergency stop failed: {e}")
     def toggle_tool_type(self):
         """Toggle between vacuum and gripper mode manually."""
         self.is_vacuum_tool = not self.is_vacuum_tool
@@ -503,6 +522,8 @@ class MecaPendant(QWidget):
         except Exception as e:
             self.log(f"[ERROR] Failed to initialize joystick support: {e}")
             self.joystick = None
+
+
 
     def init_joint_tab(self) -> None:
         """Initialize the joint control tab"""
