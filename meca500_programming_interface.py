@@ -45,7 +45,7 @@ class StepDialog(QDialog):
 
         # Step type selection
         self.type_combo = QComboBox()
-        self.type_combo.addItems(["Move to Position", "Open Gripper", "Close Gripper", "Set Gripper Position", "Wait", "Home", "Loop Start", "Loop End"])
+        self.type_combo.addItems(["Move to Position", "Open Gripper", "Close Gripper", "Vacuum On", "Vacuum Off","Set Gripper Position", "Wait", "Home", "Loop Start", "Loop End"])
 
         # Set initial selection based on step_type
         if step_type == "move":
@@ -56,6 +56,10 @@ class StepDialog(QDialog):
             self.type_combo.setCurrentIndex(2)
         elif step_type == "set_gripper":
             self.type_combo.setCurrentIndex(3)
+        elif step_type == "vacuum_on":
+            self.type_combo.setCurrentIndex(4)  # <--- NEW
+        elif step_type == "vacuum_off":
+            self.type_combo.setCurrentIndex(5)
         elif step_type == "wait":
             self.type_combo.setCurrentIndex(4)
         elif step_type == "home":
@@ -102,6 +106,10 @@ class StepDialog(QDialog):
             self.create_close_gripper_form()
         elif selected_type == "Set Gripper Position":
             self.create_set_gripper_form()
+        elif selected_type == "Vacuum On":
+            self.create_vacuum_on_form()  # <--- NEW
+        elif selected_type == "Vacuum Off":
+            self.create_vacuum_off_form()
         elif selected_type == "Wait":
             self.create_wait_form()
         elif selected_type == "Home":
@@ -200,6 +208,11 @@ class StepDialog(QDialog):
         record_btn.clicked.connect(self.record_current_position)
         self.form_layout.addWidget(record_btn)
 
+    def create_vacuum_on_form(self):
+        self.form_layout.addWidget(QLabel("Activate pneumatic vacuum (Vacuum ON)."))
+
+    def create_vacuum_off_form(self):
+        self.form_layout.addWidget(QLabel("Deactivate pneumatic vacuum (Vacuum OFF)."))
     def update_move_type_description(self, move_type):
 
         self.move_type_description.setText(MOVEMENT_TYPE_DESCRIPTIONS.get(move_type, ""))
@@ -343,6 +356,10 @@ class StepDialog(QDialog):
                 "type": "set_gripper",
                 "position": self.gripper_pos_spin.value()
             }
+        elif selected_type == "Vacuum On":
+            return {"type": "vacuum_on"}  # <--- NEW
+        elif selected_type == "Vacuum Off":
+            return {"type": "vacuum_off"}
 
         elif selected_type == "Wait":
             return {
@@ -976,6 +993,10 @@ class ProgrammingInterface(QWidget):
                 self.execute_close_gripper_step()
             elif step_type == "set_gripper":
                 self.execute_set_gripper_step(step)
+            elif step_type == "vacuum_on":
+                self.execute_vacuum_on_step()  # <--- NEW
+            elif step_type == "vacuum_off":
+                self.execute_vacuum_off_step()
             elif step_type == "wait":
                 self.execute_wait_step(step)
             elif step_type == "home":
@@ -1022,9 +1043,27 @@ class ProgrammingInterface(QWidget):
 
         return -1
 
+    def execute_vacuum_on_step(self):
+        """Activate vacuum (valve on)"""
+        if not self.robot:
+            raise Exception("Robot not connected")
+        try:
+            self.robot.SetValveState(0, 1)  # (valve 0: stay, valve 1: open)
+            self.log_to_console("Vacuum ON (SetValveState(0,1))")
+        except Exception as e:
+            self.log_to_console(f"Vacuum ON error: {e}")
+            self.show_error("Error during vacuum ON: " + str(e))
 
-
-
+    def execute_vacuum_off_step(self):
+        """Deactivate vacuum (valve off)"""
+        if not self.robot:
+            raise Exception("Robot not connected")
+        try:
+            self.robot.SetValveState(0, 0)  # (valve 0: stay, valve 1: close)
+            self.log_to_console("Vacuum OFF (SetValveState(0,0))")
+        except Exception as e:
+            self.log_to_console(f"Vacuum OFF error: {e}")
+            self.show_error("Error during vacuum OFF: " + str(e))
     def check_command_completion(self):
         """Check if the current command has completed"""
         if not self.running:
@@ -1055,8 +1094,11 @@ class ProgrammingInterface(QWidget):
             return 1000  # 1 second for gripper operations
         elif step_type == "home":
             return 3000  # 3 seconds for homing
+        elif step_type in ["open_gripper", "close_gripper", "set_gripper", "vacuum_on", "vacuum_off"]:
+            return 1000
         else:
             return 500   # 0.5 seconds for other steps
+
 
     def execute_move_step(self, step):
         """Execute a move step and wait for completion"""

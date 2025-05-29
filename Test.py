@@ -6,13 +6,14 @@ Meca500 Robot Control GUI
 
 
 
-# Patch the MecaPendant class with improved error handling
-#singularoty error,fixed ig
+
 import sys
 import time
 import traceback
 from functools import partial
 from typing import List, Dict, Any, Optional, Tuple, Callable
+from mecademicpy.robot import Robot
+# Add these imports if not present
 
 
 # PyQt imports
@@ -23,9 +24,6 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer
 
-# Robot control imports
-import mecademicpy.mx_robot_def as defs
-from mecademicpy.robot import Robot
 
 # Joystick support
 import pygame
@@ -109,11 +107,20 @@ class MecaPendant(QWidget):
         self.robot = Robot()
         sys.stdout = sys.stderr = ConsoleInterceptor(self.log)
 
+        # --- NEW: Track end effector/tool type
+        self.is_vacuum_tool = False  # Will be set by detection logic
+
         # Initialize state variables
         self._init_state_variables()
 
         # Build the UI
         self._build_ui()
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("color: lightgreen;")
+        self.layout().addWidget(self.status_label)
+
+
+
 
         # Initialize timers
         self._init_timers()
@@ -162,21 +169,19 @@ class MecaPendant(QWidget):
 
     def _build_ui(self) -> None:
         """Build the complete user interface"""
-        # Create tabs for joint and cartesian control
         self.tabs = QTabWidget()
         self.init_joint_tab()
         self.init_cartesian_tab()
 
-        # Create left panel with controls
         left_panel = self._create_left_panel()
 
-        # Create right panel with console
-        right_panel = self._create_right_panel()
+        self.detect_tool_btn = QPushButton("Switch to Vacuum/Gripper")
+        self.detect_tool_btn.clicked.connect(self.toggle_tool_type)
+        left_panel.addWidget(self.detect_tool_btn)
 
-        # Create status bar
+        right_panel = self._create_right_panel()
         status_bar = self._create_status_bar()
 
-        # Assemble main layout
         main_layout = QHBoxLayout()
         main_layout.setSpacing(20)
         main_layout.setContentsMargins(10, 10, 10, 10)
@@ -230,6 +235,7 @@ class MecaPendant(QWidget):
         mode_box.setLayout(mode_layout)
         return mode_box
 
+
     def _create_robot_controls_group(self) -> QGroupBox:
         """Create the robot control buttons group"""
         control_box = QGroupBox("Robot Controls")
@@ -239,18 +245,19 @@ class MecaPendant(QWidget):
         self.reset_button.clicked.connect(self.reset_error)
         ctrl_layout.addWidget(self.reset_button)
 
-        for text, slot in [
-            ("Home", self.go_home),
-            ("Open Gripper", self.open_gripper),
-            ("Close Gripper", self.close_gripper)
-        ]:
-            btn = QPushButton(text)
-            btn.clicked.connect(slot)
-            ctrl_layout.addWidget(btn)
+        self.home_button = QPushButton("Home")
+        self.home_button.clicked.connect(self.go_home)
+        ctrl_layout.addWidget(self.home_button)
+
+        self.end_effector_btn1 = QPushButton()
+        self.end_effector_btn2 = QPushButton()
+        self.end_effector_btn1.clicked.connect(self.handle_end_effector_btn1)
+        self.end_effector_btn2.clicked.connect(self.handle_end_effector_btn2)
+        ctrl_layout.addWidget(self.end_effector_btn1)
+        ctrl_layout.addWidget(self.end_effector_btn2)
 
         control_box.setLayout(ctrl_layout)
         return control_box
-
     def _create_velocity_control_group(self) -> QGroupBox:
         """Create the velocity control group"""
         vel_box = QGroupBox("Maximum Jogging Velocity")
@@ -360,6 +367,65 @@ class MecaPendant(QWidget):
 
         return right_panel
 
+    def toggle_tool_type(self):
+        """Toggle between vacuum and gripper mode manually."""
+        self.is_vacuum_tool = not self.is_vacuum_tool
+        self.update_end_effector_buttons()
+        tool = "Vacuum" if self.is_vacuum_tool else "Gripper"
+        self.log(f"Manually set tool: {tool}")
+
+    def update_end_effector_buttons(self):
+        """Update the labels and callbacks of the two end-effector buttons depending on tool type."""
+        btn1 = getattr(self, "end_effector_btn1", None)
+        btn2 = getattr(self, "end_effector_btn2", None)
+        if btn1 is None or btn2 is None:
+            return
+
+        if self.is_vacuum_tool:
+            btn1.setText("Vacuum On")
+            btn2.setText("Vacuum Off")
+            btn1.setStyleSheet("background-color: #2196F3; color: white;")
+            btn2.setStyleSheet("background-color: #b71c1c; color: white;")
+            btn1.setToolTip("Activate pneumatic vacuum (pick up part)")
+            btn2.setToolTip("Release pneumatic vacuum (drop part)")
+        else:
+            btn1.setText("Open Gripper")
+            btn2.setText("Close Gripper")
+            btn1.setStyleSheet("")
+            btn2.setStyleSheet("")
+            btn1.setToolTip("Open the mechanical gripper")
+            btn2.setToolTip("Close the mechanical gripper")
+
+    def handle_end_effector_btn1(self):
+        if self.is_vacuum_tool:
+            self.vacuum_on()
+        else:
+            self.open_gripper()
+
+    def handle_end_effector_btn2(self):
+        if self.is_vacuum_tool:
+            self.vacuum_off()
+        else:
+            self.close_gripper()
+
+    def vacuum_on(self):
+        """Turn vacuum ON (activate suction via pneumatic valve)"""
+        try:
+            # Only use SetValveState (do not use VacuumGrip!)
+            self.robot.SetValveState(0,1)
+            self.log("Vacuum ON (suction activated).")
+            self.update_gripper_label(True)
+        except Exception as e:
+            self.log(f"[ERROR] Vacuum on (SetValveState()): {e}")
+
+    def vacuum_off(self):
+        """Turn vacuum OFF (release suction via pneumatic valve)"""
+        try:
+            self.robot.SetValveState(0,0)
+            self.log("Vacuum OFF (released).")
+            self.update_gripper_label(False)
+        except Exception as e:
+            self.log(f"[ERROR] Vacuum off (SetValveState(0)): {e}")
     def _create_status_bar(self) -> QHBoxLayout:
         """Create the status bar at the bottom of the window"""
         status_bar = QHBoxLayout()
@@ -780,7 +846,6 @@ class MecaPendant(QWidget):
         try:
             self.robot.SendCustomCommand("GripperOpen")
             self.update_gripper_label(True)
-            # Add delay to ensure robot state is updated before updating slider
             QTimer.singleShot(500, self.update_gripper_slider)
             self.log("Gripper opened.")
         except Exception as e:
@@ -791,7 +856,6 @@ class MecaPendant(QWidget):
         try:
             self.robot.SendCustomCommand("GripperClose")
             self.update_gripper_label(False)
-            # Add delay to ensure robot state is updated before updating slider
             QTimer.singleShot(500, self.update_gripper_slider)
             self.log("Gripper closed.")
         except Exception as e:
@@ -870,6 +934,9 @@ class MecaPendant(QWidget):
             self.update_gripper_slider()
 
             QTimer.singleShot(200, self.check_error_state)
+            # --- After connecting, check tool type and update buttons
+            QTimer.singleShot(500, self.detect_tool_type)
+
         except Exception as e:
             self.conn_label.setText("❌ Disconnected")
             self.conn_label.setStyleSheet("color: red;")
@@ -973,13 +1040,34 @@ class MecaPendant(QWidget):
                 self.last_button_states = [0] * self.joystick.get_numbuttons()
 
             # Gripper toggle
+            # Gripper/Vacuum toggle
             if current_buttons[0] and not self.last_button_states[0]:
-                self.gripper_open = not self.gripper_open
-                cmd = "GripperOpen" if self.gripper_open else "GripperClose"
-                self.robot.SendCustomCommand(cmd)
-                self.update_gripper_label(self.gripper_open)
-                self.log(f"Gripper {'op ened' if self.gripper_open else 'closed'}")
-
+                if self.is_vacuum_tool:
+                    # Toggle vacuum state
+                    self.gripper_open = not self.gripper_open
+                    if self.gripper_open:
+                        try:
+                            self.robot.SetValveState(0, 1)
+                            self.log("Vacuum ON (joystick)")
+                        except Exception as e:
+                            self.log(f"[ERROR] Vacuum ON (joystick): {e}")
+                    else:
+                        try:
+                            self.robot.SetValveState(0, 0)
+                            self.log("Vacuum OFF (joystick)")
+                        except Exception as e:
+                            self.log(f"[ERROR] Vacuum OFF (joystick): {e}")
+                    self.update_gripper_label(self.gripper_open)
+                else:
+                    # Toggle gripper state
+                    self.gripper_open = not self.gripper_open
+                    cmd = "GripperOpen" if self.gripper_open else "GripperClose"
+                    try:
+                        self.robot.SendCustomCommand(cmd)
+                        self.log(f"Gripper {'opened' if self.gripper_open else 'closed'} (joystick)")
+                    except Exception as e:
+                        self.log(f"[ERROR] Gripper toggle (joystick): {e}")
+                    self.update_gripper_label(self.gripper_open)
                 # Sync slider & value
                 percent = 100 if self.gripper_open else 0
                 self.gripper_slider.blockSignals(True)
