@@ -6,7 +6,7 @@ Meca500 Robot Control GUI
 
 
 
-
+import time
 import sys
 from functools import partial
 from typing import List, Callable

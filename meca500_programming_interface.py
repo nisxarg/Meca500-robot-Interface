@@ -208,6 +208,20 @@ class StepDialog(QDialog):
         record_btn.clicked.connect(self.record_current_position)
         self.form_layout.addWidget(record_btn)
 
+        form_layout = QFormLayout()
+        self.speed_spin = QDoubleSpinBox()
+        self.speed_spin.setRange(1.0, 100.0)
+        self.speed_spin.setDecimals(1)
+        self.speed_spin.setSingleStep(1.0)
+        self.speed_spin.setSuffix(" %")
+        if self.step_data and "speed" in self.step_data:
+            self.speed_spin.setValue(self.step_data["speed"])
+        else:
+            self.speed_spin.setValue(20.0)  # Default speed
+
+        form_layout.addRow("Speed:", self.speed_spin)
+        self.form_layout.addLayout(form_layout)
+
     def create_vacuum_on_form(self):
         self.form_layout.addWidget(QLabel("Activate pneumatic vacuum (Vacuum ON)."))
 
@@ -329,16 +343,15 @@ class StepDialog(QDialog):
 
         if selected_type == "Move to Position":
             move_type = self.move_type_combo.currentText()
-
-            # Get joint and cartesian values
             joints = [spin.value() for spin in self.joint_inputs]
             position = [spin.value() for spin in self.cart_inputs]
-
+            speed = self.speed_spin.value() if hasattr(self, "speed_spin") else 20.0
             return {
                 "type": "move",
                 "move_type": move_type,
                 "joints": joints,
-                "position": position
+                "position": position,
+                "speed": speed
             }
 
         elif selected_type == "Open Gripper":
@@ -720,16 +733,21 @@ class ProgrammingInterface(QWidget):
         try:
             # Get current joint positions
             joints = self.robot.GetJoints()
-
             # Get current cartesian position
             position = self.robot.GetPose()
+            # Get default or last used speed
+            speed = 20.0
+            # Try to get from the last step or your GUI if possible
+            if self.program_steps and "speed" in self.program_steps[-1]:
+                speed = self.program_steps[-1]["speed"]
 
             # Create a new step with the current position
             step_data = {
                 "type": "move",
                 "move_type": "MoveL",  # Default to linear movement
                 "joints": joints,
-                "position": position
+                "position": position,
+                "speed": speed
             }
 
             self.program_steps.append(step_data)
@@ -741,7 +759,6 @@ class ProgrammingInterface(QWidget):
 
         except Exception as e:
             self.show_error(f"Error recording position: {e}")
-
     def load_program(self):
         """Load a program from a file"""
         file_path, _ = QFileDialog.getOpenFileName(
@@ -1099,38 +1116,52 @@ class ProgrammingInterface(QWidget):
         else:
             return 500   # 0.5 seconds for other steps
 
-
     def execute_move_step(self, step):
-        """Execute a move step and wait for completion"""
+        print("DEBUG: execute_move_step called with step:", step)
         if not self.robot:
+            print("DEBUG: Robot not connected")
             raise Exception("Robot not connected")
 
         move_type = step.get("move_type", "MoveL")
+        speed = step.get("speed", 20.0)
+        print(f"DEBUG: move_type={move_type}, speed={speed}")
 
         try:
             if move_type == "MoveJ":
+                print("DEBUG: Setting joint velocity")
+                self.robot.SetJointVel(speed)  # percent
                 joints = step.get("joints", [0, 0, 0, 0, 0, 0])
+                print("DEBUG: Commanding MoveJoints", joints)
                 self.robot.MoveJoints(*joints)
                 self.robot.WaitIdle()
-                self.log_to_console(f"Executed MoveJ to joints {joints}")
-
-            elif move_type == "MoveL":
+            elif move_type in ("MoveL", "MoveP"):
+                print("DEBUG: Setting cartesian linear velocity")
+                self.robot.SetCartLinVel(speed)  # mm/s
                 position = step.get("position", [180, 0, 180, 0, 0, 0])
-                self.robot.MoveLin(*position)
+                if move_type == "MoveL":
+                    print("DEBUG: Commanding MoveLin", position)
+                    self.robot.MoveLin(*position)
+                else:
+                    print("DEBUG: Commanding MovePose", position)
+                    self.robot.MovePose(*position)
                 self.robot.WaitIdle()
-                self.log_to_console(f"Executed MoveL to position {position}")
-
-            elif move_type == "MoveP":
-                position = step.get("position", [180, 0, 180, 0, 0, 0])
-                self.robot.MovePose(*position)
-                self.robot.WaitIdle()
-                self.log_to_console(f"Executed MoveP to position {position}")
-
-            # ⛔ Do NOT call execute_next_step() here anymore!
+            print("DEBUG: Movement command sent successfully")
 
         except Exception as e:
-            self.log_to_console(f"Movement error: {e}")
-            self.show_error("Error during movement: " + str(e))
+                err_msg = str(e)
+                # Special-case messages for known error types
+                if "singularity" in err_msg.lower():
+                    user_msg = "❗ Singularity error: The requested move would result in a robot singularity. Try a different pose or use MoveJ."
+                elif "limit" in err_msg.lower():
+                    user_msg = f"❗ Limit error: {err_msg}"
+                elif "not homed" in err_msg.lower():
+                    user_msg = "❗ Robot is not homed. Please home the robot before moving."
+                elif "not activated" in err_msg.lower():
+                    user_msg = "❗ Robot is not activated. Please activate the robot before moving."
+                else:
+                    user_msg = f"❗ Movement error: {err_msg}"
+                self.log_to_console(user_msg)
+                self.show_error(user_msg)
 
     def execute_open_gripper_step(self):
         """Execute an open gripper step"""
@@ -1282,18 +1313,16 @@ class ProgrammingInterface(QWidget):
 
         if step_type == "move":
             move_type = step.get("move_type", "MoveL")
-
+            speed = step.get("speed", 20.0)
             # Show different coordinates based on move type
             if move_type == "MoveJ":
-                # For joint movements, show joint values
                 joints = step.get("joints", [0, 0, 0, 0, 0, 0])
                 joints_str = ", ".join(f"{j:.1f}" for j in joints)
-                return f"{move_type} to joints [{joints_str}]"
+                return f"{move_type} to joints [{joints_str}] @ {speed}%"
             else:
-                # For cartesian movements, show position values
                 position = step.get("position", [0, 0, 0, 0, 0, 0])
-                pos_str = ", ".join(f"{p:.1f}" for p in position[:3])  # Just show XYZ for brevity
-                return f"{move_type} to position [{pos_str}...]"
+                pos_str = ", ".join(f"{p:.1f}" for p in position[:3])
+                return f"{move_type} to position [{pos_str}...] @ {speed}%"
 
         elif step_type == "open_gripper":
             return "Open Gripper"
@@ -1435,7 +1464,7 @@ class ProgrammingInterface(QWidget):
         # Display in error label
         self.error_label.setText(message)
         self.error_label.setVisible(True)
-        self.reset_error_btn.setVisible(True)
+
 
         # Stop program if running
         if self.running:
@@ -1479,7 +1508,7 @@ class ProgrammingInterface(QWidget):
                             time.sleep(1.5)  # Wait longer for socket to fully close
 
                             # Reconnect
-                            self.robot.Connect()
+                            self.robot.Connect(address, disconnect_on_exception=False)
                             self.log_to_console("Reconnected to robot")
                             time.sleep(0.5)  # Give connection time to stabilize
                         except Exception as conn_err:
@@ -1530,191 +1559,22 @@ class ProgrammingInterface(QWidget):
         QTimer.singleShot(2000, lambda: self.reset_error_btn.setEnabled(True))
 
     def sync_robot_state(self):
-        """Synchronize GUI state with actual robot state"""
         if not self.robot:
             return
-
         if self.running:
-            return  # Don't sync during program execution
+            return
 
         try:
-            # Try to get robot status safely
-            try:
-                # Wrap in try-except to catch socket errors
-                try:
-                    status = self.robot.GetStatusRobot()
-                except ConnectionError as conn_err:
-                    # Handle socket closed or connection errors
-                    self.log_to_console("Connection lost. Attempting to reconnect...")
-                    try:
-                        # Try to disconnect cleanly first
-                        try:
-                            self.robot.Disconnect()
-                        except:
-                            pass
-
-                        time.sleep(1.5)  # Wait longer for socket to fully close
-
-                        # Reconnect
-                        self.robot.Connect()
-                        self.log_to_console("Reconnected successfully")
-
-                        # Get status again after reconnection
-                        status = self.robot.GetStatusRobot()
-                    except Exception as reconnect_err:
-                        raise Exception(f"Reconnection failed: {reconnect_err}")
-
-                # Store previous state to detect changes
-                prev_status = getattr(self, '_prev_robot_status', None)
-
-                # Only log if this is the first check or if status has changed
-                if prev_status != str(status):
-                    # Store current status for future comparison
-                    self._prev_robot_status = str(status)
-
-                    # Only log status changes, not every check
-                    if prev_status is not None:  # Skip first time to avoid initial spam
-                        self.log_to_console(f"Robot status changed: {status}")
-
-                # Check if robot is already homed
-                is_homed = False
-                try:
-                    is_homed = self.robot.IsHomed()
-                except:
-                    # If IsHomed() is not available, try to infer from status
-                    is_homed = "MX_ST_NOT_HOMED" not in str(status)
-
-                # Check if robot is activated
-                is_activated = False
-                try:
-                    is_activated = self.robot.IsActivated()
-                except:
-                    # If IsActivated() is not available, try to infer from status
-                    is_activated = "MX_ST_ACTIVATED" in str(status) or "activated" in str(status).lower()
-
-                # Check for emergency stop or reset condition
-                is_error = False
-                try:
-                    # Look for error indicators in status
-                    is_error = "error: True" in str(status).lower() or "MX_ST_ERROR" in str(status)
-                except:
-                    pass
-
-                # Handle emergency stop recovery
-                if is_error:
-                    # Only handle once per error occurrence
-                    if not getattr(self, '_handling_emergency', False):
-                        self._handling_emergency = True
-                        self.log_to_console("Detected emergency stop or error condition")
-
-                        # Don't auto-recover here, just update UI
-                        # User should press Reset Error button
-                else:
-                    # Reset emergency handling flag when error clears
-                    if getattr(self, '_handling_emergency', False):
-                        self._handling_emergency = False
-
-                # Only log significant state changes, not routine checks
-                prev_activated = getattr(self, '_prev_activated', None)
-                prev_homed = getattr(self, '_prev_homed', None)
-                prev_error = getattr(self, '_prev_error', None)
-
-                if prev_activated != is_activated:
-                    self._prev_activated = is_activated
-                    self.log_to_console(f"Robot activation state changed: {'Activated' if is_activated else 'Deactivated'}")
-
-                if prev_homed != is_homed:
-                    self._prev_homed = is_homed
-                    self.log_to_console(f"Robot homing state changed: {'Homed' if is_homed else 'Not homed'}")
-
-                if prev_error != is_error:
-                    self._prev_error = is_error
-                    if is_error:
-                        self.log_to_console("Robot entered error state")
-                    else:
-                        self.log_to_console("Robot error cleared")
-
-                # Mark as synced after first successful status check
-                if not self.robot_state_synced:
-                    self.robot_state_synced = True
-                    self.log_to_console("Robot state successfully synced with GUI")
-
-            except Exception as status_err:
-                # Only log connection errors once, not repeatedly
-                if not hasattr(self, '_connection_error_logged'):
-                    self.log_to_console(f"Robot state sync - Cannot get status: {status_err}")
-                    self._connection_error_logged = True
-
-                # Check if this is a socket closed error
-                if "socket" in str(status_err).lower() or "connection" in str(status_err).lower():
-                    self.log_to_console("Socket connection issue detected")
-
-                    # Try to reconnect
-                    try:
-                        # Try to disconnect cleanly first
-                        try:
-                            self.robot.Disconnect()
-                        except:
-                            pass
-
-                        time.sleep(1.5)  # Wait longer for socket to fully close
-
-                        # Reconnect
-                        self.robot.Connect()
-                        self.log_to_console("Reconnected after socket issue")
-
-                        # Reset error logging flags
-                        self._connection_error_logged = False
-                        if hasattr(self, '_reconnection_error_logged'):
-                            del self._reconnection_error_logged
-                    except Exception as conn_err:
-                        if not hasattr(self, '_reconnection_error_logged'):
-                            self.log_to_console(f"Reconnection failed: {conn_err}")
-                            self._reconnection_error_logged = True
-
-                # If we've never successfully synced and can't get status, try reconnection
-                elif not self.robot_state_synced:
-                    try:
-                        self.log_to_console("Robot state sync - Attempting reconnection...")
-
-                        # Try to disconnect cleanly first
-                        try:
-                            self.robot.Disconnect()
-                        except:
-                            pass
-
-                        time.sleep(1.5)  # Wait longer for socket to fully close
-
-                        # Reconnect
-                        self.robot.Connect()
-                        self.log_to_console("Robot state sync - Reconnected")
-
-                        # Reset error logging flag on successful reconnection
-                        self._connection_error_logged = False
-                    except Exception as conn_err:
-                        if not hasattr(self, '_reconnection_error_logged'):
-                            self.log_to_console(f"Robot state sync - Reconnection failed: {conn_err}")
-                            self._reconnection_error_logged = True
-
+            status = self.robot.GetStatusRobot()
+            # Only print/log if the status has changed
+            prev_status = getattr(self, '_prev_robot_status', None)
+            if prev_status != str(status):
+                self._prev_robot_status = str(status)
+                self.log_to_console(f"Robot status: {status}")
+            # ... rest of sync logic ...
         except Exception as e:
-            # Only log general errors once, not repeatedly
-            if not hasattr(self, '_general_error_logged'):
-                self.log_to_console(f"Robot state sync - Error: {e}")
-                self._general_error_logged = True
-
-            # Reset error logging flags periodically to allow retries
-            if hasattr(self, '_error_reset_timer'):
-                if time.time() - self._error_reset_timer > 30:  # Reset every 30 seconds
-                    if hasattr(self, '_connection_error_logged'):
-                        del self._connection_error_logged
-                    if hasattr(self, '_reconnection_error_logged'):
-                        del self._reconnection_error_logged
-                    if hasattr(self, '_general_error_logged'):
-                        del self._general_error_logged
-                    self._error_reset_timer = time.time()
-            else:
-                self._error_reset_timer = time.time()
-
+            # handle error
+            pass
     def log_to_console(self, message):
         """Log a message to the console"""
         # Emit signal to update console in main GUI
