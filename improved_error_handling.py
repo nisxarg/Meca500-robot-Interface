@@ -256,11 +256,14 @@ class ErrorHandler:
         )
 
     def _log_to_console(self, error_message, error_code=""):
-        """Log error to the console"""
-        if error_code:
-            self.main_gui.log(f"⚠️ ERROR ({error_code}): {error_message}")
-        else:
-            self.main_gui.log(f"⚠️ ERROR: {error_message}")
+        now = time.time()
+        key = f"{error_code}:{error_message}"
+        if now - getattr(self, "_last_log_time", {}).get(key, 0) < 2:  # 2 seconds throttle
+            return
+        self._last_log_time = getattr(self, "_last_log_time", {})
+        self._last_log_time[key] = now
+
+        self.main_gui.log(f"⚠️ ERROR ({error_code}): {error_message}" if error_code else f"⚠️ ERROR: {error_message}")
 
     def _reset_error(self):
         """Reset robot error state in a non-blocking way"""
@@ -333,6 +336,7 @@ class ErrorHandler:
         """Clear the error state after debounce period"""
         self.error_popup_shown = False
         self.last_error_code = None
+        self._last_error_message = None
 
 
 def detect_error_type(error_message):
@@ -409,63 +413,19 @@ def patch_meca_pendant(MecaPendant):
     if original_reset_error:
         MecaPendant.reset_error = new_reset_error
 
-    # We'll modify the instance creation instead of trying to patch ConsoleInterceptor directly
+    # We'll modify the instance creation but WITHOUT patching ConsoleInterceptor
     original_init = MecaPendant.__init__
 
     def new_init(self, *args, **kwargs):
         # Call the original __init__
         original_init(self, *args, **kwargs)
 
-        # Now patch the console interceptor that was created during initialization
-        original_write = sys.stdout.write
+        # Create error handler but don't patch stdout
+        if not hasattr(self, 'error_handler'):
+            self.error_handler = ErrorHandler(self)
 
-        def new_write(msg):
-            """
-            Enhanced console interceptor that detects specific errors.
-            """
-            msg = msg.strip()
-            if not msg:
-                return
-
-            # Call the original method
-            original_write(msg + "\n")
-
-            # Check for specific error patterns in a non-blocking way
-            if "MX_ST_NOT_HOMED" in msg:
-                # This is a "not homed" error, show special dialog
-                if hasattr(self, 'error_handler'):
-                    QTimer.singleShot(0, lambda: self.error_handler.handle_error(
-                        "Robot is not homed. Please home the robot to continue.",
-                        "MX_ST_NOT_HOMED",
-                        True  # Show home button
-                    ))
-            elif "MX_ST_SINGULARITY" in msg:
-                # This is a singularity error
-                if hasattr(self, 'error_handler'):
-                    QTimer.singleShot(0, lambda: self.error_handler.handle_error(
-                        "Robot encountered a singularity. Try moving to a different position or homing the robot.",
-                        "MX_ST_SINGULARITY",
-                        False  # Don't show home button
-                    ))
-            elif "MX_ST_ALREADY_ERR" in msg:
-                # Already in error state
-                if hasattr(self, 'error_handler'):
-                    QTimer.singleShot(0, lambda: self.error_handler.handle_error(
-                        "Robot is already in error state. Please reset the error first.",
-                        "MX_ST_ALREADY_ERR",
-                        False  # Don't show home button
-                    ))
-            elif "socket" in msg.lower() or "connection" in msg.lower():
-                # Connection issue
-                if hasattr(self, 'error_handler'):
-                    QTimer.singleShot(0, lambda: self.error_handler.handle_error(
-                        "Connection to robot lost. Please check the connection and try again.",
-                        "CONNECTION_ERROR",
-                        False  # Don't show home button
-                    ))
-
-        if hasattr(sys.stdout, 'callback') and sys.stdout.callback == self.log:
-            sys.stdout.write = new_write
+        # IMPORTANT: We're NOT patching sys.stdout.write here anymore
+        # This prevents duplicate error messages
 
     MecaPendant.__init__ = new_init
 

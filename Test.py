@@ -4,6 +4,7 @@ Meca500 Robot Control GUI
 
 """
 
+import re
 
 
 import time
@@ -42,42 +43,203 @@ ERROR_DEBOUNCE_INTERVAL = 3.0  # seconds
 
 
 class ConsoleInterceptor:
-
-    """
-    Intercepts stdout/stderr to capture and filter robot messages for the GUI console.
-    """
     def __init__(self, callback: Callable[[str], None]):
         self.callback = callback
-        self._stdout = sys.stdout
-        self._stderr = sys.stderr
+        self._stdout = sys.__stdout__
+        self._stderr = sys.__stderr__
         self._last_logged: Dict[str, float] = {}
         self._debounce_interval = ERROR_DEBOUNCE_INTERVAL
+
+        # Global message history for aggressive deduplication
+        self._message_history = []
+        self._max_history = 20
+
+        # Common error message patterns to identify
+        self.error_patterns = [
+            "error", "singularity", "limit", "not homed", "connection",
+            "socket", "already in error", "movement error", "disconnected",
+            "automatically disconnected", "robot is in error", "reset",
+            "attempting to reconnect"
+        ]
+
+        # Special patterns that need exact matching
+        self.exact_patterns = [
+            "Error reset complete",
+            "Movement error: Automatically disconnected",
+            "Robot is in error. Please reset",
+            "The robot is in error. Please reset",
+            "Resetting robot error"
+        ]
+
+        # Message groups for deduplication (messages in same group are considered duplicates)
+        self.message_groups = {
+            "reset_complete": ["Error reset complete", "✅ Error reset complete"],
+            "movement_error": ["Movement error", "Automatically disconnected", "disconnect_on_exception"],
+            "robot_error": ["Robot is in error", "The robot is in error", "Please reset"],
+            "resetting": ["Resetting robot error", "🔄 Resetting"]
+        }
+
 
     def write(self, msg: str) -> None:
         msg = msg.strip()
         if not msg:
             return
 
+        # Remove common emojis
+        msg = re.sub(r"[⚠️❗✅⛔🔄🔌🧲🚨🖱️]", "", msg).strip()
+
         now = time.time()
+        timestamp = time.strftime("[%H:%M:%S]", time.localtime(now))
         key = None
 
-        # Filter and categorize messages
-        if "MX_ST_JOINT_OVER_LIMIT" in msg:
-            key = "joint_limit"
-        elif "MX_ST_ALREADY_ERR" in msg:
-            key = "already_error"
+        # Deduplication: global history
+        if self._is_duplicate_message(msg):
+            return
 
-        # Apply debouncing to avoid message spam
-        if key:
-            last_time = self._last_logged.get(key, 0)
-            if now - last_time > self._debounce_interval:
-                clean_msg = msg.split("Command:")[0].strip()
-                self.callback(f"⚠️ {clean_msg}")
+        self._message_history.append(msg)
+        if len(self._message_history) > self._max_history:
+            self._message_history.pop(0)
+
+        # Handle exact patterns
+        for pattern in self.exact_patterns:
+            if pattern in msg:
+                key = f"exact:{pattern}"
+                last_time = self._last_logged.get(key, 0)
+                if now - last_time < self._debounce_interval:
+                    return
                 self._last_logged[key] = now
+                self.callback(f"{timestamp} {msg}")
+                return
 
-        # Always write to original stdout
-        self._stdout.write(msg + "\n")
+        # Handle general error patterns
+        is_error = any(pattern in msg.lower() for pattern in self.error_patterns)
+        # Error pattern grouping
+        if is_error:
+            key = self._create_error_key(msg)
+            last_time = self._last_logged.get(key, 0)
 
+            if now - last_time < self._debounce_interval:
+                return  # Debounce
+
+            self._last_logged[key] = now
+
+            summary = None
+            msg_lower = msg.lower()
+
+            # Group: Singularity + Already in error + Move failed
+            if "singularity" in msg_lower or "already in error" in msg_lower or "automatically disconnected" in msg_lower:
+                summary = "Movement failed: Robot encountered a singularity or was already in error. Reset required."
+                key = "summary:movement_fail"
+
+            # Group: Reset required
+            elif "robot is in error" in msg_lower or "please reset" in msg_lower:
+                summary = "Robot is in error. Please reset."
+
+            # Group: Attempting reconnect
+            elif "attempting to reconnect" in msg_lower or "connection" in msg_lower:
+                summary = "Attempting to reconnect..."
+
+            # Fallback: raw message
+            final_msg = summary if summary else msg
+
+            # Debounce grouped summary
+            last_summary_time = self._last_logged.get(key, 0)
+            if now - last_summary_time < self._debounce_interval:
+                return
+
+            self._last_logged[key] = now
+
+            try:
+                self.callback(f"{timestamp} {final_msg}")
+            except Exception as e:
+                self._stdout.write(f"[Logging Error] {e}\n")
+
+            return
+
+        # Normal info message
+        self.callback(f"{timestamp} {msg}")
+        self._stdout.write(f"{timestamp} {msg}\n")
+
+    def _is_duplicate_message(self, msg: str) -> bool:
+        """
+        Aggressively check if a message is a duplicate of recent messages.
+        This catches duplicates even if they have slightly different formatting.
+        """
+        msg_lower = msg.lower()
+
+        # Check for exact duplicates first
+        if msg in self._message_history:
+            return True
+
+        # Check for messages in the same group
+        for group_name, patterns in self.message_groups.items():
+            if any(pattern.lower() in msg_lower for pattern in patterns):
+                # This message belongs to a group, check if we've seen any message from this group recently
+                group_key = f"group:{group_name}"
+                now = time.time()
+                last_time = self._last_logged.get(group_key, 0)
+                if now - last_time < self._debounce_interval:
+                    return True  # Skip duplicate from same group
+                self._last_logged[group_key] = now
+                return False  # Not a duplicate, but record this group
+
+        # Check for high similarity with recent messages
+        for old_msg in self._message_history:
+            if self._message_similarity(msg, old_msg) > 0.8:  # 80% similarity threshold
+                return True
+
+        return False
+
+    def _message_similarity(self, msg1: str, msg2: str) -> float:
+        """Calculate similarity between two messages (0.0 to 1.0)"""
+        # Simple similarity: percentage of words in common
+        words1 = set(msg1.lower().split())
+        words2 = set(msg2.lower().split())
+
+        if not words1 or not words2:
+            return 0.0
+
+        common_words = words1.intersection(words2)
+        return len(common_words) / max(len(words1), len(words2))
+
+    def _create_error_key(self, msg: str) -> str:
+        """Create a better key for error message deduplication."""
+        # Extract error code if present
+        error_code = ""
+        if "(" in msg and ")" in msg:
+            start = msg.find("(")
+            end = msg.find(")")
+            if start < end:
+                error_code = msg[start + 1:end]
+
+        # Create a key based on error type and code
+        msg_lower = msg.lower()
+
+        # Special case for reset messages
+        if "reset" in msg_lower and "complete" in msg_lower:
+            return "reset:complete"
+
+        # Special case for movement errors
+        if "movement error" in msg_lower or "automatically disconnected" in msg_lower:
+            return "movement:disconnected"
+
+        # Special case for robot in error messages
+        if "robot is in error" in msg_lower or "please reset" in msg_lower:
+            return "robot:error_state"
+
+        # Special case for reconnection messages
+        if "attempting to reconnect" in msg_lower:
+            return "connection:reconnect"
+
+        # Identify the type of error
+        error_type = "general"
+        for pattern in ["singularity", "limit", "not homed", "connection", "socket", "movement", "disconnected"]:
+            if pattern in msg_lower:
+                error_type = pattern
+                break
+
+        # Combine error type and code for the key
+        return f"{error_type}:{error_code}"
     def flush(self) -> None:
         self._stdout.flush()
         self._stderr.flush()
@@ -96,7 +258,14 @@ class MecaPendant(QWidget):
 
         # Initialize robot connection
         self.robot = Robot()
-        sys.stdout = sys.stderr = ConsoleInterceptor(self.log)
+        self.console = QTextEdit()
+        self.console.setReadOnly(True)
+        self.console.setStyleSheet("font-family: Consolas; font-size: 11px; color: lightgreen;")
+
+        def append_to_console(msg: str):
+            self.console.append(msg)
+
+        sys.stdout = sys.stderr = ConsoleInterceptor(append_to_console)
 
         # --- NEW: Track end effector/tool type
         self.is_vacuum_tool = False  # Will be set by detection logic
@@ -999,9 +1168,8 @@ class MecaPendant(QWidget):
         except Exception as e:
             self.log(f"[ERROR] {e}")
 
-    def log(self, msg: str) -> None:
-        """Add a message to the console log"""
-        self.console.append(msg)
+    def log(self, msg: str):
+        print(msg)  # This goes through ConsoleInterceptor
 
     def update_increment_from_slider(self, val: int) -> None:
         """Update increment value from slider position"""
