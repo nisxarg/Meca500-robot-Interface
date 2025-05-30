@@ -5,8 +5,14 @@ Meca500 Robot Control GUI
 """
 
 import re
+from PyQt6.QtWidgets import QMainWindow
+import threading
+from PyQt6.QtCore import QMetaObject, Q_ARG, Qt
 
-
+import cv2
+from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtWidgets import QLabel
+from PyQt6.QtWidgets import QStackedLayout
 import time
 import sys
 from functools import partial
@@ -244,11 +250,105 @@ class ConsoleInterceptor:
         self._stdout.flush()
         self._stderr.flush()
 
+class CameraWindow(QMainWindow):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Camera Feed")
+        self.setMinimumSize(800, 600)
+        self.setWindowFlags(Qt.WindowType.Window)
+
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.layout = QVBoxLayout(self.central_widget)
+
+        self.camera_label = QLabel()
+        self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.camera_label.setScaledContents(False)  # Keep aspect ratio
+        self.camera_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        self.layout.addWidget(self.camera_label)
+
+        self.camera_timer = QTimer()
+        self.camera_timer.timeout.connect(self.update_frame)
+        self.cap = None
+
+
+
+    def start_camera(self, width=1920, height=1080):
+        def init_camera():
+            print("[CameraWindow] Starting camera init...")
+
+            # Set loading message from background thread
+            QMetaObject.invokeMethod(
+                self.camera_label,
+                "setText",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, "Loading camera feed...")
+            )
+
+            self.cap = cv2.VideoCapture(2)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+
+            if not self.cap.isOpened():
+                print("[CameraWindow] Failed to open camera.")
+                QMetaObject.invokeMethod(
+                    self.camera_label,
+                    "setText",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, "❌ Failed to open camera.")
+                )
+                return
+
+            print("[CameraWindow] Camera opened successfully.")
+            self.first_frame_received = False
+
+            QMetaObject.invokeMethod(
+                self.camera_timer,
+                "start",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(int, 30)
+            )
+
+        # Show placeholder before thread starts
+        self.camera_label.setText("Loading camera feed...")
+        self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.camera_label.setStyleSheet("font-size: 20px; color: gray;")
+
+        threading.Thread(target=init_camera, daemon=True).start()
+
+    def update_frame(self):
+        if not self.cap:
+            return
+        ret, frame = self.cap.read()
+        if not ret:
+            return
+
+        if not self.first_frame_received:
+            self.camera_label.clear()
+            self.first_frame_received = True
+
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = frame.shape
+        bytes_per_line = ch * w
+        qt_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(qt_img).scaled(
+            self.camera_label.size(), Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation)
+        self.camera_label.setPixmap(pixmap)
+
+    def closeEvent(self, event):
+        self.camera_timer.stop()
+        if self.cap:
+            self.cap.release()
+            self.cap = None
+        event.accept()
 
 class MecaPendant(QWidget):
     """
     Main GUI class for controlling the Meca500 robot.
     """
+
     def __init__(self):
         super().__init__()
 
@@ -258,37 +358,61 @@ class MecaPendant(QWidget):
 
         # Initialize robot connection
         self.robot = Robot()
+
+        # Create console and camera widgets
         self.console = QTextEdit()
         self.console.setReadOnly(True)
         self.console.setStyleSheet("font-family: Consolas; font-size: 11px; color: lightgreen;")
 
+        self.camera_label = QLabel()
+        self.camera_label.setMinimumSize(640, 480)
+        self.camera_label.setScaledContents(True)
+        self.camera_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        self.first_frame_received = False
+        self.camera_label.setText("Loading camera feed...")
+        self.camera_label.setStyleSheet("font-size: 20px; color: gray;")
+
+
+        self.camera_label.setStyleSheet("background-color: black;")
+
+        # Stack console and camera in the same space
+        self.console_camera_stack = QStackedLayout()
+        self.console_camera_stack.addWidget(self.console)  # index 0 = console
+        self.console_camera_stack.addWidget(self.camera_label)  # index 1 = camera
+
+        # Wrap in a container
+        self.console_container = QWidget()
+        self.console_container.setLayout(self.console_camera_stack)
+
+        # Redirect stdout to console
         def append_to_console(msg: str):
             self.console.append(msg)
 
         sys.stdout = sys.stderr = ConsoleInterceptor(append_to_console)
 
-        # --- NEW: Track end effector/tool type
+        # Track end effector/tool type
         self.is_vacuum_tool = False  # Will be set by detection logic
 
-        # Initialize state variables
-        self._init_state_variables()
+        # Initialize timers, joystick, and state
+        self.camera_enabled = False
+        self.camera_timer = QTimer()
+        self.camera_timer.timeout.connect(self.update_camera_frame)
+        self.camera_capture = None
 
-        # Build the UI
+        self._init_state_variables()
+        self._init_timers()
+        self._init_joystick()
+
+        # Build the rest of the UI (now console_container is ready)
         self._build_ui()
+
+        # Add status bar
         self.status_label = QLabel("Ready")
         self.status_label.setStyleSheet("color: lightgreen;")
         self.layout().addWidget(self.status_label)
 
-
-
-
-        # Initialize timers
-        self._init_timers()
-
-        # Initialize joystick
-        self._init_joystick()
-
-        # Set default control mode
+        # Set control mode defaults
         self.update_control_buttons()
         self.set_control_mode("mouse")
         self.highlight_joint_group()
@@ -516,8 +640,13 @@ class MecaPendant(QWidget):
         clear_btn.clicked.connect(self.console.clear)
 
         right_panel.addWidget(console_label)
-        right_panel.addWidget(self.console)
+        right_panel.addWidget(self.console_container)
+
         right_panel.addWidget(clear_btn)  # Directly below console
+
+        toggle_cam_btn = QPushButton("Toggle Camera View")
+        toggle_cam_btn.clicked.connect(self.toggle_camera_view)
+        right_panel.addWidget(toggle_cam_btn)
 
         # Add the programming interface
         from meca500_programming_interface import add_programming_interface_to_gui
@@ -533,6 +662,28 @@ class MecaPendant(QWidget):
         right_panel.addWidget(emergency_btn)
 
         return right_panel
+
+    def toggle_camera_view(self):
+        if hasattr(self, 'camera_window') and self.camera_window.isVisible():
+            self.camera_window.close()
+            self.log("Camera window closed.")
+        else:
+            self.camera_window = CameraWindow(self)
+            self.camera_window.show()
+            QTimer.singleShot(100, self.camera_window.start_camera)  # Slight delay to avoid UI lag
+            self.log("Camera window opened.")
+
+    def update_camera_frame(self):
+        if not self.camera_capture:
+            return
+        ret, frame = self.camera_capture.read()
+        if not ret:
+            return
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = frame.shape
+        bytes_per_line = ch * w
+        qt_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        self.camera_label.setPixmap(QPixmap.fromImage(qt_img))
 
     def emergency_stop(self):
         """Emergency stop handler to immediately halt the robot and warn the user"""
