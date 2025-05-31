@@ -1116,53 +1116,46 @@ class ProgrammingInterface(QWidget):
         else:
             return 500   # 0.5 seconds for other steps
 
+    def friendly_robot_error_message(self, e):
+        err_msg = str(e).lower()
+        if "singularity" in err_msg:
+            return "❗ Singularity error: Linear move not possible due to a singularity along the path."
+        elif "not homed" in err_msg or "mx_st_not_homed" in err_msg:
+            return "❗ Robot is not homed. Please home the robot."
+        elif "limit" in err_msg:
+            return f"❗ Limit error: {e}"
+        elif "out of reach" in err_msg:
+            return "❗ Out of reach: The requested move cannot be performed from the current position."
+        elif "connection" in err_msg or "socket" in err_msg:
+            return "❗ Connection error: Lost connection to robot."
+        else:
+            return f"❗ Movement error: {e}"
+
     def execute_move_step(self, step):
-        print("DEBUG: execute_move_step called with step:", step)
         if not self.robot:
-            print("DEBUG: Robot not connected")
             raise Exception("Robot not connected")
 
         move_type = step.get("move_type", "MoveL")
-        speed = step.get("speed", 20.0)
-        print(f"DEBUG: move_type={move_type}, speed={speed}")
-
         try:
             if move_type == "MoveJ":
-                print("DEBUG: Setting joint velocity")
-                self.robot.SetJointVel(speed)  # percent
                 joints = step.get("joints", [0, 0, 0, 0, 0, 0])
-                print("DEBUG: Commanding MoveJoints", joints)
                 self.robot.MoveJoints(*joints)
                 self.robot.WaitIdle()
-            elif move_type in ("MoveL", "MoveP"):
-                print("DEBUG: Setting cartesian linear velocity")
-                self.robot.SetCartLinVel(speed)  # mm/s
+                self.log_to_console(f"Executed MoveJ to joints {joints}")
+            elif move_type == "MoveL":
                 position = step.get("position", [180, 0, 180, 0, 0, 0])
-                if move_type == "MoveL":
-                    print("DEBUG: Commanding MoveLin", position)
-                    self.robot.MoveLin(*position)
-                else:
-                    print("DEBUG: Commanding MovePose", position)
-                    self.robot.MovePose(*position)
+                self.robot.MoveLin(*position)
                 self.robot.WaitIdle()
-            print("DEBUG: Movement command sent successfully")
-
+                self.log_to_console(f"Executed MoveL to position {position}")
+            elif move_type == "MoveP":
+                position = step.get("position", [180, 0, 180, 0, 0, 0])
+                self.robot.MovePose(*position)
+                self.robot.WaitIdle()
+                self.log_to_console(f"Executed MoveP to position {position}")
         except Exception as e:
-                err_msg = str(e)
-                # Special-case messages for known error types
-                if "singularity" in err_msg.lower():
-                    user_msg = "❗ Singularity error: The requested move would result in a robot singularity. Try a different pose or use MoveJ."
-                elif "limit" in err_msg.lower():
-                    user_msg = f"❗ Limit error: {err_msg}"
-                elif "not homed" in err_msg.lower():
-                    user_msg = "❗ Robot is not homed. Please home the robot before moving."
-                elif "not activated" in err_msg.lower():
-                    user_msg = "❗ Robot is not activated. Please activate the robot before moving."
-                else:
-                    user_msg = f"❗ Movement error: {err_msg}"
-                self.log_to_console(user_msg)
-                self.show_error(user_msg)
-
+            user_msg = self.friendly_robot_error_message(e)
+            self.log_to_console(user_msg)
+            self.show_error(user_msg)
     def execute_open_gripper_step(self):
         """Execute an open gripper step"""
         if not self.robot:
@@ -1457,22 +1450,18 @@ class ProgrammingInterface(QWidget):
             self.gripper_state_label.setStyleSheet("color: gray;")
 
     def show_error(self, message):
-        """Show an error message"""
-        # Log to console
+        if getattr(self, '_last_error_message', None) == message:
+            return
+        self._last_error_message = message
         self.log_to_console(f"ERROR: {message}")
 
-        # Display in error label
+        self.log_to_console(f"ERROR: {message}")
         self.error_label.setText(message)
         self.error_label.setVisible(True)
-
-
-        # Stop program if running
+        self.reset_error_btn.setVisible(False)
         if self.running:
             self.stop_program()
-
-        # Hide error after a timeout
         self.error_timer.start(5000)
-
     def reset_error(self):
         """Reset the error state"""
         # Disable the reset button immediately to prevent double-clicks
@@ -1566,14 +1555,14 @@ class ProgrammingInterface(QWidget):
 
         try:
             status = self.robot.GetStatusRobot()
-            # Only print/log if the status has changed
-            prev_status = getattr(self, '_prev_robot_status', None)
-            if prev_status != str(status):
-                self._prev_robot_status = str(status)
-                self.log_to_console(f"Robot status: {status}")
-            # ... rest of sync logic ...
-        except Exception as e:
-            # handle error
+            # Update cached state, but do NOT log anything
+            self._prev_robot_status = str(status)
+            self._prev_activated = getattr(status, 'activation_state', None)
+            self._prev_homed = getattr(status, 'homed', None)
+            self._prev_error = getattr(status, 'error', None)
+            # (You may use these for GUI indicators elsewhere, but do NOT log here.)
+        except Exception:
+            # Optionally handle exceptions, but do NOT log or print
             pass
     def log_to_console(self, message):
         """Log a message to the console"""

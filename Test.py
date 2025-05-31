@@ -4,8 +4,15 @@ Meca500 Robot Control GUI
 
 """
 
+import re
+from PyQt6.QtWidgets import QMainWindow
+import threading
+from PyQt6.QtCore import QMetaObject, Q_ARG, Qt
 
-
+import cv2
+from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtWidgets import QLabel
+from PyQt6.QtWidgets import QStackedLayout
 import time
 import sys
 from functools import partial
@@ -42,51 +49,306 @@ ERROR_DEBOUNCE_INTERVAL = 3.0  # seconds
 
 
 class ConsoleInterceptor:
-
-    """
-    Intercepts stdout/stderr to capture and filter robot messages for the GUI console.
-    """
     def __init__(self, callback: Callable[[str], None]):
         self.callback = callback
-        self._stdout = sys.stdout
-        self._stderr = sys.stderr
+        self._stdout = sys.__stdout__
+        self._stderr = sys.__stderr__
         self._last_logged: Dict[str, float] = {}
         self._debounce_interval = ERROR_DEBOUNCE_INTERVAL
+
+        # Global message history for aggressive deduplication
+        self._message_history = []
+        self._max_history = 20
+
+        # Common error message patterns to identify
+        self.error_patterns = [
+            "error", "singularity", "limit", "not homed", "connection",
+            "socket", "already in error", "movement error", "disconnected",
+            "automatically disconnected", "robot is in error", "reset",
+            "attempting to reconnect"
+        ]
+
+        # Special patterns that need exact matching
+        self.exact_patterns = [
+            "Error reset complete",
+            "Movement error: Automatically disconnected",
+            "Robot is in error. Please reset",
+            "The robot is in error. Please reset",
+            "Resetting robot error"
+        ]
+
+        # Message groups for deduplication (messages in same group are considered duplicates)
+        self.message_groups = {
+            "reset_complete": ["Error reset complete", "✅ Error reset complete"],
+            "movement_error": ["Movement error", "Automatically disconnected", "disconnect_on_exception"],
+            "robot_error": ["Robot is in error", "The robot is in error", "Please reset"],
+            "resetting": ["Resetting robot error", "🔄 Resetting"]
+        }
+
 
     def write(self, msg: str) -> None:
         msg = msg.strip()
         if not msg:
             return
 
+        # Remove common emojis
+        msg = re.sub(r"[⚠️❗✅⛔🔄🔌🧲🚨🖱️]", "", msg).strip()
+
         now = time.time()
+        timestamp = time.strftime("[%H:%M:%S]", time.localtime(now))
         key = None
 
-        # Filter and categorize messages
-        if "MX_ST_JOINT_OVER_LIMIT" in msg:
-            key = "joint_limit"
-        elif "MX_ST_ALREADY_ERR" in msg:
-            key = "already_error"
+        # Deduplication: global history
+        if self._is_duplicate_message(msg):
+            return
 
-        # Apply debouncing to avoid message spam
-        if key:
-            last_time = self._last_logged.get(key, 0)
-            if now - last_time > self._debounce_interval:
-                clean_msg = msg.split("Command:")[0].strip()
-                self.callback(f"⚠️ {clean_msg}")
+        self._message_history.append(msg)
+        if len(self._message_history) > self._max_history:
+            self._message_history.pop(0)
+
+        # Handle exact patterns
+        for pattern in self.exact_patterns:
+            if pattern in msg:
+                key = f"exact:{pattern}"
+                last_time = self._last_logged.get(key, 0)
+                if now - last_time < self._debounce_interval:
+                    return
                 self._last_logged[key] = now
+                self.callback(f"{timestamp} {msg}")
+                return
 
-        # Always write to original stdout
-        self._stdout.write(msg + "\n")
+        # Handle general error patterns
+        is_error = any(pattern in msg.lower() for pattern in self.error_patterns)
+        # Error pattern grouping
+        if is_error:
+            key = self._create_error_key(msg)
+            last_time = self._last_logged.get(key, 0)
 
+            if now - last_time < self._debounce_interval:
+                return  # Debounce
+
+            self._last_logged[key] = now
+
+            summary = None
+            msg_lower = msg.lower()
+
+            # Group: Singularity + Already in error + Move failed
+            if "singularity" in msg_lower or "already in error" in msg_lower or "automatically disconnected" in msg_lower:
+                summary = "Movement failed: Robot encountered a singularity or was already in error. Reset required."
+                key = "summary:movement_fail"
+
+            # Group: Reset required
+            elif "robot is in error" in msg_lower or "please reset" in msg_lower:
+                summary = "Robot is in error. Please reset."
+
+            # Group: Attempting reconnect
+            elif "attempting to reconnect" in msg_lower or "connection" in msg_lower:
+                summary = "Attempting to reconnect..."
+
+            # Fallback: raw message
+            final_msg = summary if summary else msg
+
+            # Debounce grouped summary
+            last_summary_time = self._last_logged.get(key, 0)
+            if now - last_summary_time < self._debounce_interval:
+                return
+
+            self._last_logged[key] = now
+
+            try:
+                self.callback(f"{timestamp} {final_msg}")
+            except Exception as e:
+                self._stdout.write(f"[Logging Error] {e}\n")
+
+            return
+
+        # Normal info message
+        self.callback(f"{timestamp} {msg}")
+        self._stdout.write(f"{timestamp} {msg}\n")
+
+    def _is_duplicate_message(self, msg: str) -> bool:
+        """
+        Aggressively check if a message is a duplicate of recent messages.
+        This catches duplicates even if they have slightly different formatting.
+        """
+        msg_lower = msg.lower()
+
+        # Check for exact duplicates first
+        if msg in self._message_history:
+            return True
+
+        # Check for messages in the same group
+        for group_name, patterns in self.message_groups.items():
+            if any(pattern.lower() in msg_lower for pattern in patterns):
+                # This message belongs to a group, check if we've seen any message from this group recently
+                group_key = f"group:{group_name}"
+                now = time.time()
+                last_time = self._last_logged.get(group_key, 0)
+                if now - last_time < self._debounce_interval:
+                    return True  # Skip duplicate from same group
+                self._last_logged[group_key] = now
+                return False  # Not a duplicate, but record this group
+
+        # Check for high similarity with recent messages
+        for old_msg in self._message_history:
+            if self._message_similarity(msg, old_msg) > 0.8:  # 80% similarity threshold
+                return True
+
+        return False
+
+    def _message_similarity(self, msg1: str, msg2: str) -> float:
+        """Calculate similarity between two messages (0.0 to 1.0)"""
+        # Simple similarity: percentage of words in common
+        words1 = set(msg1.lower().split())
+        words2 = set(msg2.lower().split())
+
+        if not words1 or not words2:
+            return 0.0
+
+        common_words = words1.intersection(words2)
+        return len(common_words) / max(len(words1), len(words2))
+
+    def _create_error_key(self, msg: str) -> str:
+        """Create a better key for error message deduplication."""
+        # Extract error code if present
+        error_code = ""
+        if "(" in msg and ")" in msg:
+            start = msg.find("(")
+            end = msg.find(")")
+            if start < end:
+                error_code = msg[start + 1:end]
+
+        # Create a key based on error type and code
+        msg_lower = msg.lower()
+
+        # Special case for reset messages
+        if "reset" in msg_lower and "complete" in msg_lower:
+            return "reset:complete"
+
+        # Special case for movement errors
+        if "movement error" in msg_lower or "automatically disconnected" in msg_lower:
+            return "movement:disconnected"
+
+        # Special case for robot in error messages
+        if "robot is in error" in msg_lower or "please reset" in msg_lower:
+            return "robot:error_state"
+
+        # Special case for reconnection messages
+        if "attempting to reconnect" in msg_lower:
+            return "connection:reconnect"
+
+        # Identify the type of error
+        error_type = "general"
+        for pattern in ["singularity", "limit", "not homed", "connection", "socket", "movement", "disconnected"]:
+            if pattern in msg_lower:
+                error_type = pattern
+                break
+
+        # Combine error type and code for the key
+        return f"{error_type}:{error_code}"
     def flush(self) -> None:
         self._stdout.flush()
         self._stderr.flush()
 
+class CameraWindow(QMainWindow):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Camera Feed")
+        self.setMinimumSize(800, 600)
+        self.setWindowFlags(Qt.WindowType.Window)
+
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.layout = QVBoxLayout(self.central_widget)
+
+        self.camera_label = QLabel()
+        self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.camera_label.setScaledContents(False)  # Keep aspect ratio
+        self.camera_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        self.layout.addWidget(self.camera_label)
+
+        self.camera_timer = QTimer()
+        self.camera_timer.timeout.connect(self.update_frame)
+        self.cap = None
+
+
+
+    def start_camera(self, width=1920, height=1080):
+        def init_camera():
+            print("[CameraWindow] Starting camera init...")
+
+            # Set loading message from background thread
+            QMetaObject.invokeMethod(
+                self.camera_label,
+                "setText",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, "Loading camera feed...")
+            )
+
+            self.cap = cv2.VideoCapture(2)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+
+            if not self.cap.isOpened():
+                print("[CameraWindow] Failed to open camera.")
+                QMetaObject.invokeMethod(
+                    self.camera_label,
+                    "setText",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, "❌ Failed to open camera.")
+                )
+                return
+
+            print("[CameraWindow] Camera opened successfully.")
+            self.first_frame_received = False
+
+            QMetaObject.invokeMethod(
+                self.camera_timer,
+                "start",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(int, 30)
+            )
+
+        # Show placeholder before thread starts
+        self.camera_label.setText("Loading camera feed...")
+        self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.camera_label.setStyleSheet("font-size: 20px; color: gray;")
+
+        threading.Thread(target=init_camera, daemon=True).start()
+
+    def update_frame(self):
+        if not self.cap:
+            return
+        ret, frame = self.cap.read()
+        if not ret:
+            return
+
+        if not self.first_frame_received:
+            self.camera_label.clear()
+            self.first_frame_received = True
+
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = frame.shape
+        bytes_per_line = ch * w
+        qt_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(qt_img).scaled(
+            self.camera_label.size(), Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation)
+        self.camera_label.setPixmap(pixmap)
+
+    def closeEvent(self, event):
+        self.camera_timer.stop()
+        if self.cap:
+            self.cap.release()
+            self.cap = None
+        event.accept()
 
 class MecaPendant(QWidget):
     """
     Main GUI class for controlling the Meca500 robot.
     """
+
     def __init__(self):
         super().__init__()
 
@@ -96,30 +358,61 @@ class MecaPendant(QWidget):
 
         # Initialize robot connection
         self.robot = Robot()
-        sys.stdout = sys.stderr = ConsoleInterceptor(self.log)
 
-        # --- NEW: Track end effector/tool type
+        # Create console and camera widgets
+        self.console = QTextEdit()
+        self.console.setReadOnly(True)
+        self.console.setStyleSheet("font-family: Consolas; font-size: 11px; color: lightgreen;")
+
+        self.camera_label = QLabel()
+        self.camera_label.setMinimumSize(640, 480)
+        self.camera_label.setScaledContents(True)
+        self.camera_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        self.first_frame_received = False
+        self.camera_label.setText("Loading camera feed...")
+        self.camera_label.setStyleSheet("font-size: 20px; color: gray;")
+
+
+        self.camera_label.setStyleSheet("background-color: black;")
+
+        # Stack console and camera in the same space
+        self.console_camera_stack = QStackedLayout()
+        self.console_camera_stack.addWidget(self.console)  # index 0 = console
+        self.console_camera_stack.addWidget(self.camera_label)  # index 1 = camera
+
+        # Wrap in a container
+        self.console_container = QWidget()
+        self.console_container.setLayout(self.console_camera_stack)
+
+        # Redirect stdout to console
+        def append_to_console(msg: str):
+            self.console.append(msg)
+
+        sys.stdout = sys.stderr = ConsoleInterceptor(append_to_console)
+
+        # Track end effector/tool type
         self.is_vacuum_tool = False  # Will be set by detection logic
 
-        # Initialize state variables
-        self._init_state_variables()
+        # Initialize timers, joystick, and state
+        self.camera_enabled = False
+        self.camera_timer = QTimer()
+        self.camera_timer.timeout.connect(self.update_camera_frame)
+        self.camera_capture = None
 
-        # Build the UI
+        self._init_state_variables()
+        self._init_timers()
+        self._init_joystick()
+
+        # Build the rest of the UI (now console_container is ready)
         self._build_ui()
+
+        # Add status bar
         self.status_label = QLabel("Ready")
         self.status_label.setStyleSheet("color: lightgreen;")
         self.layout().addWidget(self.status_label)
 
-
-
-
-        # Initialize timers
-        self._init_timers()
-
-        # Initialize joystick
-        self._init_joystick()
-
-        # Set default control mode
+        # Set control mode defaults
         self.update_control_buttons()
         self.set_control_mode("mouse")
         self.highlight_joint_group()
@@ -347,8 +640,13 @@ class MecaPendant(QWidget):
         clear_btn.clicked.connect(self.console.clear)
 
         right_panel.addWidget(console_label)
-        right_panel.addWidget(self.console)
+        right_panel.addWidget(self.console_container)
+
         right_panel.addWidget(clear_btn)  # Directly below console
+
+        toggle_cam_btn = QPushButton("Toggle Camera View")
+        toggle_cam_btn.clicked.connect(self.toggle_camera_view)
+        right_panel.addWidget(toggle_cam_btn)
 
         # Add the programming interface
         from meca500_programming_interface import add_programming_interface_to_gui
@@ -364,6 +662,28 @@ class MecaPendant(QWidget):
         right_panel.addWidget(emergency_btn)
 
         return right_panel
+
+    def toggle_camera_view(self):
+        if hasattr(self, 'camera_window') and self.camera_window.isVisible():
+            self.camera_window.close()
+            self.log("Camera window closed.")
+        else:
+            self.camera_window = CameraWindow(self)
+            self.camera_window.show()
+            QTimer.singleShot(100, self.camera_window.start_camera)  # Slight delay to avoid UI lag
+            self.log("Camera window opened.")
+
+    def update_camera_frame(self):
+        if not self.camera_capture:
+            return
+        ret, frame = self.camera_capture.read()
+        if not ret:
+            return
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = frame.shape
+        bytes_per_line = ch * w
+        qt_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        self.camera_label.setPixmap(QPixmap.fromImage(qt_img))
 
     def emergency_stop(self):
         """Emergency stop handler to immediately halt the robot and warn the user"""
@@ -999,9 +1319,8 @@ class MecaPendant(QWidget):
         except Exception as e:
             self.log(f"[ERROR] {e}")
 
-    def log(self, msg: str) -> None:
-        """Add a message to the console log"""
-        self.console.append(msg)
+    def log(self, msg: str):
+        print(msg)  # This goes through ConsoleInterceptor
 
     def update_increment_from_slider(self, val: int) -> None:
         """Update increment value from slider position"""
