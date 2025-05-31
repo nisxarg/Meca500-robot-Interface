@@ -91,7 +91,7 @@ class MecaPendant(QWidget):
         super().__init__()
 
         # Setup window properties
-        self.setWindowTitle("Versacell Robotic System")
+        self.setWindowTitle("VersaCELL Robotic System")
         self.resize(1000, 700)
 
         # Initialize robot connection
