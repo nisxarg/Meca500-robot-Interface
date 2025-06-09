@@ -10,7 +10,7 @@ import sys
 import traceback
 from PyQt6.QtWidgets import QApplication
 from improved_error_handling import patch_meca_pendant
-from Test import MecaPendant    
+from Test import MecaPendant
 
 
 def main():
@@ -40,3 +40,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

@@ -61,13 +61,13 @@ class StepDialog(QDialog):
         elif step_type == "vacuum_off":
             self.type_combo.setCurrentIndex(5)
         elif step_type == "wait":
-            self.type_combo.setCurrentIndex(4)
-        elif step_type == "home":
-            self.type_combo.setCurrentIndex(5)
-        elif step_type == "loop_start":
             self.type_combo.setCurrentIndex(6)
-        elif step_type == "loop_end":
+        elif step_type == "home":
             self.type_combo.setCurrentIndex(7)
+        elif step_type == "loop_start":
+            self.type_combo.setCurrentIndex(8)
+        elif step_type == "loop_end":
+            self.type_combo.setCurrentIndex(9)
 
         self.type_combo.currentIndexChanged.connect(self.update_form)
         self.main_layout.addWidget(QLabel("Step Type:"))

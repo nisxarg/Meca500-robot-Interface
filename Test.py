@@ -47,206 +47,81 @@ CONNECTION_RETRY_INTERVAL = 3000  # ms
 JOYSTICK_CHECK_INTERVAL = 2000  # ms
 ERROR_DEBOUNCE_INTERVAL = 3.0  # seconds
 
-
 class ConsoleInterceptor:
+    """
+    Redirects stdout to the GUI, adding timestamps and intelligent debouncing to reduce spam.
+    """
     def __init__(self, callback: Callable[[str], None]):
+        """Initializes the interceptor."""
         self.callback = callback
         self._stdout = sys.__stdout__
         self._stderr = sys.__stderr__
-        self._last_logged: Dict[str, float] = {}
-        self._debounce_interval = ERROR_DEBOUNCE_INTERVAL
 
-        # Global message history for aggressive deduplication
-        self._message_history = []
-        self._max_history = 20
+        # Stores the last time a message *key* was logged.
+        self._last_log_time: Dict[str, float] = {}
+        # Stores the content of the last message to prevent immediate exact duplicates.
+        self._last_message_content: str = ""
+        # Flag to track if we've already notified the user about the error state.
+        self._error_state_notified: bool = False
 
-        # Common error message patterns to identify
-        self.error_patterns = [
-            "error", "singularity", "limit", "not homed", "connection",
-            "socket", "already in error", "movement error", "disconnected",
-            "automatically disconnected", "robot is in error", "reset",
-            "attempting to reconnect"
-        ]
-
-        # Special patterns that need exact matching
-        self.exact_patterns = [
-            "Error reset complete",
-            "Movement error: Automatically disconnected",
-            "Robot is in error. Please reset",
-            "The robot is in error. Please reset",
-            "Resetting robot error"
-        ]
-
-        # Message groups for deduplication (messages in same group are considered duplicates)
-        self.message_groups = {
-            "reset_complete": ["Error reset complete", "✅ Error reset complete"],
-            "movement_error": ["Movement error", "Automatically disconnected", "disconnect_on_exception"],
-            "robot_error": ["Robot is in error", "The robot is in error", "Please reset"],
-            "resetting": ["Resetting robot error", "🔄 Resetting"]
-        }
-
+    def _get_message_key(self, msg: str) -> str:
+        """Creates a key for a message to group similar spammy messages."""
+        msg_lower = msg.lower()
+        if "robot is in error" in msg_lower or "please reset" in msg_lower or "already in err" in msg_lower:
+            return "error_state"
+        if "reset complete" in msg_lower or "resetting robot" in msg_lower:
+            # When a reset happens, clear the error notification flag.
+            self._error_state_notified = False
+            return "reset_action"
+        if "would exceed limits" in msg_lower:
+            return "limit_warning"
+        # For other messages, use the message itself as the key.
+        return msg
 
     def write(self, msg: str) -> None:
+        """
+        Intelligently writes a message to the GUI, filtering out spam.
+        """
         msg = msg.strip()
         if not msg:
             return
 
-        # Remove common emojis
-        msg = re.sub(r"[⚠️❗✅⛔🔄🔌🧲🚨🖱️]", "", msg).strip()
-
         now = time.time()
+
+        # 1. Prevent exact same message from repeating back-to-back immediately.
+        if msg == self._last_message_content:
+            return
+        self._last_message_content = msg
+
+        # 2. Use a key to group and throttle similar messages.
+        key = self._get_message_key(msg)
+
+        # If we are in an error state and another error message comes in, suppress it.
+        if key == "error_state":
+            if self._error_state_notified:
+                return  # We already told the user the robot is in an error state.
+            # Otherwise, log it and set the flag to prevent more error messages.
+            self._error_state_notified = True
+
+        # 3. Throttle all messages by their key to prevent rapid-fire repeats.
+        last_time = self._last_log_time.get(key, 0)
+        # Allow messages of the same type (key) every 2 seconds.
+        if now - last_time < 2.0:
+            return
+
+        self._last_log_time[key] = now
         timestamp = time.strftime("[%H:%M:%S]", time.localtime(now))
-        key = None
+        final_msg = f"{timestamp} {msg}"
 
-        # Deduplication: global history
-        if self._is_duplicate_message(msg):
-            return
+        # Write to the terminal and the GUI console.
+        self._stdout.write(final_msg + '\n')
+        try:
+            self.callback(final_msg)
+        except Exception as e:
+            self._stdout.write(f"--- ERROR in GUI Console Callback: {e}\n")
 
-        self._message_history.append(msg)
-        if len(self._message_history) > self._max_history:
-            self._message_history.pop(0)
-
-        # Handle exact patterns
-        for pattern in self.exact_patterns:
-            if pattern in msg:
-                key = f"exact:{pattern}"
-                last_time = self._last_logged.get(key, 0)
-                if now - last_time < self._debounce_interval:
-                    return
-                self._last_logged[key] = now
-                self.callback(f"{timestamp} {msg}")
-                return
-
-        # Handle general error patterns
-        is_error = any(pattern in msg.lower() for pattern in self.error_patterns)
-        # Error pattern grouping
-        if is_error:
-            key = self._create_error_key(msg)
-            last_time = self._last_logged.get(key, 0)
-
-            if now - last_time < self._debounce_interval:
-                return  # Debounce
-
-            self._last_logged[key] = now
-
-            summary = None
-            msg_lower = msg.lower()
-
-            # Group: Singularity + Already in error + Move failed
-            if "singularity" in msg_lower or "already in error" in msg_lower or "automatically disconnected" in msg_lower:
-                summary = "Movement failed: Robot encountered a singularity or was already in error. Reset required."
-                key = "summary:movement_fail"
-
-            # Group: Reset required
-            elif "robot is in error" in msg_lower or "please reset" in msg_lower:
-                summary = "Robot is in error. Please reset."
-
-            # Group: Attempting reconnect
-            elif "attempting to reconnect" in msg_lower or "connection" in msg_lower:
-                summary = "Attempting to reconnect..."
-
-            # Fallback: raw message
-            final_msg = summary if summary else msg
-
-            # Debounce grouped summary
-            last_summary_time = self._last_logged.get(key, 0)
-            if now - last_summary_time < self._debounce_interval:
-                return
-
-            self._last_logged[key] = now
-
-            try:
-                self.callback(f"{timestamp} {final_msg}")
-            except Exception as e:
-                self._stdout.write(f"[Logging Error] {e}\n")
-
-            return
-
-        # Normal info message
-        self.callback(f"{timestamp} {msg}")
-        self._stdout.write(f"{timestamp} {msg}\n")
-
-    def _is_duplicate_message(self, msg: str) -> bool:
-        """
-        Aggressively check if a message is a duplicate of recent messages.
-        This catches duplicates even if they have slightly different formatting.
-        """
-        msg_lower = msg.lower()
-
-        # Check for exact duplicates first
-        if msg in self._message_history:
-            return True
-
-        # Check for messages in the same group
-        for group_name, patterns in self.message_groups.items():
-            if any(pattern.lower() in msg_lower for pattern in patterns):
-                # This message belongs to a group, check if we've seen any message from this group recently
-                group_key = f"group:{group_name}"
-                now = time.time()
-                last_time = self._last_logged.get(group_key, 0)
-                if now - last_time < self._debounce_interval:
-                    return True  # Skip duplicate from same group
-                self._last_logged[group_key] = now
-                return False  # Not a duplicate, but record this group
-
-        # Check for high similarity with recent messages
-        for old_msg in self._message_history:
-            if self._message_similarity(msg, old_msg) > 0.8:  # 80% similarity threshold
-                return True
-
-        return False
-
-    def _message_similarity(self, msg1: str, msg2: str) -> float:
-        """Calculate similarity between two messages (0.0 to 1.0)"""
-        # Simple similarity: percentage of words in common
-        words1 = set(msg1.lower().split())
-        words2 = set(msg2.lower().split())
-
-        if not words1 or not words2:
-            return 0.0
-
-        common_words = words1.intersection(words2)
-        return len(common_words) / max(len(words1), len(words2))
-
-    def _create_error_key(self, msg: str) -> str:
-        """Create a better key for error message deduplication."""
-        # Extract error code if present
-        error_code = ""
-        if "(" in msg and ")" in msg:
-            start = msg.find("(")
-            end = msg.find(")")
-            if start < end:
-                error_code = msg[start + 1:end]
-
-        # Create a key based on error type and code
-        msg_lower = msg.lower()
-
-        # Special case for reset messages
-        if "reset" in msg_lower and "complete" in msg_lower:
-            return "reset:complete"
-
-        # Special case for movement errors
-        if "movement error" in msg_lower or "automatically disconnected" in msg_lower:
-            return "movement:disconnected"
-
-        # Special case for robot in error messages
-        if "robot is in error" in msg_lower or "please reset" in msg_lower:
-            return "robot:error_state"
-
-        # Special case for reconnection messages
-        if "attempting to reconnect" in msg_lower:
-            return "connection:reconnect"
-
-        # Identify the type of error
-        error_type = "general"
-        for pattern in ["singularity", "limit", "not homed", "connection", "socket", "movement", "disconnected"]:
-            if pattern in msg_lower:
-                error_type = pattern
-                break
-
-        # Combine error type and code for the key
-        return f"{error_type}:{error_code}"
     def flush(self) -> None:
+        """Flushes the underlying terminal output."""
         self._stdout.flush()
         self._stderr.flush()
 
@@ -368,6 +243,11 @@ class MecaPendant(QWidget):
         self.camera_label.setMinimumSize(640, 480)
         self.camera_label.setScaledContents(True)
         self.camera_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # Forbidden zones: list of ((x1,y1,z1), (x2,y2,z2))
+        self.forbidden_zones = [
+            ((200, 0, 308), (300, -130, 200)),  # Example box 1
+            ((61, -298, 34), (-126, -114, 121))  # Example box 2
+        ]
 
         self.first_frame_received = False
         self.camera_label.setText("Loading camera feed...")
@@ -416,6 +296,179 @@ class MecaPendant(QWidget):
         self.update_control_buttons()
         self.set_control_mode("mouse")
         self.highlight_joint_group()
+
+    def is_pose_in_forbidden_zone(self, pose: List[float]) -> bool:
+        """Check if a pose (x,y,z,rx,ry,rz) is inside any forbidden zone"""
+        if not pose or len(pose) < 3:
+            return False
+
+        x, y, z = pose[:3]
+        for idx, (c1, c2) in enumerate(self.forbidden_zones):
+            x_min, x_max = sorted([c1[0], c2[0]])
+            y_min, y_max = sorted([c1[1], c2[1]])
+            z_min, z_max = sorted([c1[2], c2[2]])
+
+            if x_min <= x <= x_max and y_min <= y <= y_max and z_min <= z <= z_max:
+                zone_name = chr(65 + idx)  # A, B, C, etc.
+
+                # Debounce the logging to avoid spam
+                current_time = time.time()
+                log_key = f"zone_{zone_name}_{x:.1f}_{y:.1f}_{z:.1f}"
+
+                if not hasattr(self, '_zone_log_times'):
+                    self._zone_log_times = {}
+
+                last_log_time = self._zone_log_times.get(log_key, 0)
+                if current_time - last_log_time > 2.0:  # Only log every 2 seconds
+                    self.log(f"❌ Position in forbidden zone '{zone_name}': ({x:.1f}, {y:.1f}, {z:.1f})", level="debug")
+                    self._zone_log_times[log_key] = current_time
+
+                return True
+        return False
+
+    def simulate_joint_movement(self, joint_deltas: List[float]) -> List[float]:
+        """Simulate what the robot pose would be after applying joint deltas"""
+        try:
+            current_joints = self.robot.GetJoints()
+            if not current_joints:
+                return None
+
+            # Apply deltas to current joints
+            new_joints = [current_joints[i] + joint_deltas[i] for i in range(6)]
+
+            # Check joint limits
+            for i, (new_joint, (min_lim, max_lim)) in enumerate(zip(new_joints, JOINT_LIMITS)):
+                if not (min_lim <= new_joint <= max_lim):
+                    self.log(f"⚠️ Joint {i + 1} would exceed limits: {new_joint:.2f} (range: {min_lim} to {max_lim})")
+                    return None
+
+            # For joint movements, we'll use a simplified approach:
+            # Since we don't have access to forward kinematics, we'll assume
+            # that small joint movements result in proportional cartesian movements
+            # This is a rough approximation but better than nothing
+
+            current_pose = self.robot.GetPose()
+            if not current_pose:
+                return None
+
+            # For small movements, approximate the cartesian change
+            # This is a very simplified approach - in production you'd use proper FK
+            estimated_pose = current_pose.copy()
+
+            # Small joint movements typically result in small cartesian movements
+            # We'll use a conservative estimate
+            max_joint_change = max(abs(d) for d in joint_deltas)
+            if max_joint_change > 0:
+                # Estimate maximum possible cartesian displacement
+                # This is very conservative - actual displacement could be much smaller
+                max_cart_displacement = max_joint_change * 10  # rough approximation in mm
+
+                # For safety, we'll check if any axis could potentially move this much
+                for i in range(3):  # X, Y, Z axes
+                    estimated_pose[i] += max_cart_displacement
+                    if self.is_pose_in_forbidden_zone(estimated_pose):
+                        return None
+                    estimated_pose[i] -= 2 * max_cart_displacement
+                    if self.is_pose_in_forbidden_zone(estimated_pose):
+                        return None
+                    estimated_pose[i] += max_cart_displacement  # restore
+
+            return estimated_pose
+
+        except Exception as e:
+            self.log(f"[ERROR] simulate_joint_movement: {e}")
+            return None
+
+    def simulate_cartesian_movement(self, cart_deltas: List[float]) -> List[float]:
+        """Simulate what the robot pose would be after applying cartesian deltas"""
+        try:
+            current_pose = self.robot.GetPose()
+            if not current_pose:
+                return None
+
+            # Apply deltas to current pose
+            new_pose = [current_pose[i] + cart_deltas[i] for i in range(6)]
+            return new_pose
+
+        except Exception as e:
+            self.log(f"[ERROR] simulate_cartesian_movement: {e}")
+            return None
+
+    def is_movement_safe(self, movement_type: str, deltas: List[float]) -> bool:
+        """Check if a movement would be safe (not enter forbidden zone)"""
+        try:
+            # Get current pose
+            current_pose = self.robot.GetPose()
+            if not current_pose:
+                self.log("⚠️ Cannot get current robot pose")
+                return False
+
+            # Check if already in forbidden zone
+            if self.is_pose_in_forbidden_zone(current_pose):
+                self.log("❌ Robot is already in forbidden zone - movement blocked")
+                return False
+
+            # Simulate the movement
+            if movement_type == "joint":
+                new_pose = self.simulate_joint_movement(deltas)
+            elif movement_type == "cartesian":
+                new_pose = self.simulate_cartesian_movement(deltas)
+            else:
+                self.log(f"⚠️ Unknown movement type: {movement_type}")
+                return False
+
+            if new_pose is None:
+                return False
+
+            # Check if new pose would be in forbidden zone
+            if self.is_pose_in_forbidden_zone(new_pose):
+                self.log("❌ Movement blocked: Would enter forbidden zone")
+                return False
+
+            return True
+
+        except Exception as e:
+            self.log(f"[ERROR] is_movement_safe: {e}")
+            return False
+
+    def get_max_safe_step(self, axis: int, direction: int, step_size: float, movement_type: str = "cartesian") -> float:
+        """Get the maximum safe step size before hitting a forbidden zone"""
+        try:
+            current_pose = self.robot.GetPose()
+            if not current_pose:
+                return 0.0
+
+            # If already in forbidden zone, don't allow any movement
+            if self.is_pose_in_forbidden_zone(current_pose):
+                return 0.0
+
+            max_safe = step_size
+            test_step = step_size * 0.1  # Start with 10% of requested step
+
+            # Binary search for maximum safe step
+            for _ in range(10):  # Limit iterations
+                deltas = [0.0] * 6
+                deltas[axis] = test_step * direction
+
+                if movement_type == "cartesian":
+                    test_pose = self.simulate_cartesian_movement(deltas)
+                else:  # joint
+                    test_pose = self.simulate_joint_movement(deltas)
+
+                if test_pose and not self.is_pose_in_forbidden_zone(test_pose):
+                    max_safe = test_step
+                    test_step = min(test_step * 1.5, step_size)  # Increase step
+                else:
+                    test_step = test_step * 0.8  # Decrease step
+
+                if test_step < 0.001:  # Minimum meaningful step
+                    break
+
+            return max_safe
+
+        except Exception as e:
+            self.log(f"[ERROR] get_max_safe_step: {e}")
+            return 0.0
 
     def _init_state_variables(self) -> None:
         """Initialize all state variables with default values"""
@@ -626,42 +679,42 @@ class MecaPendant(QWidget):
         return gripper_box
 
     def _create_right_panel(self) -> QVBoxLayout:
-        """Create the right panel with console"""
+        """Create the right panel with console, emergency stop, and programming controls"""
         right_panel = QVBoxLayout()
 
-        console_label = QLabel("Console")
-        console_label.setStyleSheet("font-weight: bold;")
-
-        self.console = QTextEdit()
-        self.console.setReadOnly(True)
-        self.console.setStyleSheet("font-family: Consolas; font-size: 11px; color: lightgreen;")
-
-        clear_btn = QPushButton("Clear Console")
-        clear_btn.clicked.connect(self.console.clear)
-
-        right_panel.addWidget(console_label)
-        right_panel.addWidget(self.console_container)
-
-        right_panel.addWidget(clear_btn)  # Directly below console
-
-        toggle_cam_btn = QPushButton("Toggle Camera View")
-        toggle_cam_btn.clicked.connect(self.toggle_camera_view)
-        right_panel.addWidget(toggle_cam_btn)
-
-        # Add the programming interface
-        from meca500_programming_interface import add_programming_interface_to_gui
-        self.programming_interface = add_programming_interface_to_gui(self)
-        right_panel.addWidget(self.programming_interface)
-
-        # Add Emergency Stop button where Clear Console was before
+        # ✅ Emergency Stop button at the top
         emergency_btn = QPushButton("EMERGENCY STOP")
         emergency_btn.setStyleSheet(
-            "background-color: red; color: white; font-weight: bold; font-size: 16px; padding: 10px;"
+            "background-color: red; color: white; font-weight: bold; font-size: 16px; padding: 1px;"
         )
         emergency_btn.clicked.connect(self.emergency_stop)
         right_panel.addWidget(emergency_btn)
 
+        # ✅ Console section
+        console_label = QLabel("Console")
+        console_label.setStyleSheet("font-weight: bold;")
+        right_panel.addWidget(console_label)
+
+        right_panel.addWidget(self.console_container, stretch=1)
+
+        clear_console_button = QPushButton("Clear Console")
+        clear_console_button.clicked.connect(self.console.clear)
+        right_panel.addWidget(clear_console_button)
+
+        # ✅ Toggle camera button
+        toggle_cam_btn = QPushButton("Toggle Camera View")
+        toggle_cam_btn.clicked.connect(self.toggle_camera_view)
+        right_panel.addWidget(toggle_cam_btn)
+
+        # ✅ Add robot programming interface
+        from meca500_programming_interface import add_programming_interface_to_gui
+        self.programming_interface = add_programming_interface_to_gui(self)
+        right_panel.addWidget(self.programming_interface)
+
         return right_panel
+
+    def toggle_camera(self):
+        self.log("📷 Toggle Camera clicked (function not implemented).")
 
     def toggle_camera_view(self):
         if hasattr(self, 'camera_window') and self.camera_window.isVisible():
@@ -685,27 +738,37 @@ class MecaPendant(QWidget):
         qt_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
         self.camera_label.setPixmap(QPixmap.fromImage(qt_img))
 
-    def emergency_stop(self):
-        """Emergency stop handler to immediately halt the robot and warn the user"""
-        try:
-            self.robot.PauseMotion()
-            self.robot.DeactivateRobot()
-            self.log("🚨 EMERGENCY STOP triggered! Robot motion halted and deactivated.")
+        # In Test.py, add this method inside the MecaPendant class
 
-            # Show a warning dialog to the user
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.critical(
-                self,
-                "Emergency Stop Activated",
-                "The robot has been halted and deactivated via software.\n\n"
-                "To recover safely:\n"
-                "1. Ensure the hardware E-Stop (red button) is RELEASED.\n"
-                "2. Power cycle the robot controller if needed.\n"
-                "3. Close and restart this application after the robot is powered up.\n\n"
-                "If the robot cannot reconnect, check cables and hardware E-Stop."
-            )
-        except Exception as e:
-            self.log(f"[ERROR] Emergency stop failed: {e}")
+    def emergency_stop(self):
+            """Emergency stop: Abort program, pause motion, and deactivate the robot."""
+            try:
+                # First, stop any running program sequence to prevent new commands.
+                if hasattr(self, 'programming_interface') and self.programming_interface.running:
+                    self.programming_interface.stop_program()
+                    self.log("▶️ Program execution aborted by Emergency Stop.")
+
+                # Halt the robot's physical motion.
+                self.robot.PauseMotion()
+                self.log("🛑 Motion Paused.")
+
+                # Deactivate the robot to cut power to motors.
+                self.robot.DeactivateRobot()
+                self.log("🚨 EMERGENCY STOP: Robot has been deactivated.")
+
+                # Display a critical warning to the user.
+                QMessageBox.critical(
+                    self,
+                    "Emergency Stop Activated",
+                    "Motion has been paused and the robot is now deactivated.\n"
+                    "The running program was aborted.\n\n"
+                    "To recover:\n"
+                    "1. Power-cycle the robot.\n"
+                    "2. Then re-activate via the GUI."
+                )
+            except Exception as e:
+                self.log(f"[ERROR] An error occurred during emergency stop: {e}")
+
     def toggle_tool_type(self):
         """Toggle between vacuum and gripper mode manually."""
         self.is_vacuum_tool = not self.is_vacuum_tool
@@ -997,17 +1060,32 @@ class MecaPendant(QWidget):
         self.tabs.addTab(tab, "Cartesian Jog")
 
     def set_joint_from_input(self, idx: int) -> None:
-        """Set joint position from input field value"""
+        """Set joint position from input field value with forbidden zone protection"""
         if self.control_mode != "mouse":
             return
 
         try:
             current = self.robot.GetJoints()
+            if not current:
+                self.log("⚠️ Cannot get current joint positions")
+                return
+
             target = float(self.joint_inputs[idx].text())
             min_lim, max_lim = JOINT_LIMITS[idx]
 
             if not (min_lim <= target <= max_lim):
                 self.log(f"⚠️ Joint {idx + 1} out of limit.")
+                return
+
+            # Calculate the movement delta
+            delta = target - current[idx]
+            joint_deltas = [0.0] * 6
+            joint_deltas[idx] = delta
+
+            # Check if movement is safe
+            if not self.is_movement_safe("joint", joint_deltas):
+                # Reset input to current value
+                self.joint_inputs[idx].setText(f"{current[idx]:.3f}")
                 return
 
             current[idx] = target
@@ -1020,13 +1098,29 @@ class MecaPendant(QWidget):
             self.log(f"[ERROR] {e}")
 
     def set_cart_from_input(self, idx: int) -> None:
-        """Set cartesian position from input field value"""
+        """Set cartesian position from input field value with forbidden zone protection"""
         if self.control_mode != "mouse":
             return
 
         try:
             current = self.robot.GetPose()
+            if not current:
+                self.log("⚠️ Cannot get current robot pose")
+                return
+
             target = float(self.cart_inputs[idx].text())
+
+            # Calculate the movement delta
+            delta = target - current[idx]
+            cart_deltas = [0.0] * 6
+            cart_deltas[idx] = delta
+
+            # Check if movement is safe
+            if not self.is_movement_safe("cartesian", cart_deltas):
+                # Reset input to current value
+                self.cart_inputs[idx].setText(f"{current[idx]:.3f}")
+                return
+
             current[idx] = target
             self.robot.MovePose(*current)
             QTimer.singleShot(500, self.update_pose_display)
@@ -1042,7 +1136,7 @@ class MecaPendant(QWidget):
         self.cart_active = [False] * 6
 
     def joint_jog_loop(self) -> None:
-        """Main loop for joint jogging"""
+        """Main loop for joint jogging with forbidden zone protection"""
         try:
             # Check robot error status
             status = self.robot.GetStatusRobot()
@@ -1070,6 +1164,15 @@ class MecaPendant(QWidget):
 
                 move = [0.0] * 6
                 move[i] = step
+
+                # Check if movement is safe before executing
+                if not self.is_movement_safe("joint", move):
+                    # Block the movement and reset slider
+                    self.joint_active[i] = False
+                    self.joint_sliders[i].blockSignals(True)
+                    self.joint_sliders[i].setValue(0)
+                    self.joint_sliders[i].blockSignals(False)
+                    continue
 
                 try:
                     self.robot.MoveJointsRel(*move)
@@ -1127,14 +1230,28 @@ class MecaPendant(QWidget):
             return 50
 
     def cartesian_jog_loop(self) -> None:
-        """Main loop for cartesian jogging"""
+        """Cartesian jog loop with proactive forbidden zone protection"""
         try:
-            # Check robot error status
-            if self.robot.GetStatusRobot().error_status:
-                self.cart_active = [False] * 6  # forcibly stop movement
+            status = self.robot.GetStatusRobot()
+            status = self.robot.GetStatusRobot()
+            if status is None or not hasattr(status, "rt_target_cart_pos"):
                 return
 
-            # Process active cartesian sliders
+            current_pose = self.robot.GetPose()
+            if not current_pose or len(current_pose) < 6:
+                # Handle case where GetPose() returns None or incomplete data
+                return
+
+            # Check if already in forbidden zone - if so, block all movements
+            if self.is_pose_in_forbidden_zone(current_pose):
+                for i in range(6):
+                    if self.cart_active[i]:
+                        self.cart_active[i] = False
+                        self.cart_sliders[i].blockSignals(True)
+                        self.cart_sliders[i].setValue(0)
+                        self.cart_sliders[i].blockSignals(False)
+                return
+
             for i in range(6):
                 if not self.cart_active[i]:
                     continue
@@ -1144,16 +1261,49 @@ class MecaPendant(QWidget):
                     continue
 
                 try:
-                    step_vals = [0] * 6
-                    step = self.cart_step_mm if i < 3 else self.cart_step_deg
-                    step_vals[i] = step * (1 if val > 0 else -1)
+                    direction = 1 if val > 0 else -1
+                    full_step = self.cart_step_mm if i < 3 else self.cart_step_deg
+
+                    # Create movement delta for this step
+                    step_vals = [0.0] * 6
+                    step_vals[i] = full_step * direction
+
+                    # Simulate the movement to check if it would enter forbidden zone
+                    test_pose = self.simulate_cartesian_movement(step_vals)
+                    if not test_pose or self.is_pose_in_forbidden_zone(test_pose):
+                        # Would enter forbidden zone - block movement
+                        self.cart_active[i] = False
+                        self.cart_sliders[i].blockSignals(True)
+                        self.cart_sliders[i].setValue(0)
+                        self.cart_sliders[i].blockSignals(False)
+                        # Only log once per axis to avoid spam
+                        if not hasattr(self, '_cart_blocked_axes'):
+                            self._cart_blocked_axes = set()
+                        if i not in self._cart_blocked_axes:
+                            self.log(f"❌ BLOCKED: Cartesian movement on axis {i+1} would enter forbidden zone")
+                            self._cart_blocked_axes.add(i)
+                        continue
+
+                    # Clear the blocked status for this axis if movement is now safe
+                    if hasattr(self, '_cart_blocked_axes') and i in self._cart_blocked_axes:
+                        self._cart_blocked_axes.remove(i)
+
+                    # Movement is safe - execute it
                     self.robot.MoveLinRelWrf(*step_vals)
-                    pose = self.robot.GetPose()
-                    self.cart_inputs[i].setText(f"{pose[i]:.3f}")
+                    updated_pose = self.robot.GetPose()
+                    if updated_pose and len(updated_pose) >= 6 and not self.cart_inputs[i].hasFocus():
+                        self.cart_inputs[i].setText(f"{updated_pose[i]:.3f}")
+
                 except Exception as e:
-                    self.log(f"[ERROR] {e}")
+                    self.log(f"[ERROR] Jog axis {i}: {e}")
+                    # On error, stop this axis
+                    self.cart_active[i] = False
+                    self.cart_sliders[i].blockSignals(True)
+                    self.cart_sliders[i].setValue(0)
+                    self.cart_sliders[i].blockSignals(False)
+
         except Exception as e:
-            self.log(f"[ERROR] cartesian_jog_loop: {e}")
+            self.log(f"[ERROR] cartesian_jog_loop failure: {e}")
 
     def update_joint_and_pose_inputs(self) -> None:
         """Update both joint and pose displays"""
@@ -1237,10 +1387,12 @@ class MecaPendant(QWidget):
             self.log(f"[ERROR] {e}")
 
     def go_home(self) -> None:
-        """Move the robot to home position"""
+        """Move the robot to home position (bypasses forbidden zone protection)"""
         try:
+            # Home command should bypass forbidden zone protection
+            # since it's a safety command to return to a known safe position
+            self.log("Going home... (bypassing forbidden zone protection)")
             self.robot.MoveJoints(0, 0, 0, 0, 0, 0)
-            self.log("Going home...")
             QTimer.singleShot(1000, self.update_joint_and_pose_inputs)
         except Exception as e:
             self.log(f"[ERROR] {e}")
@@ -1440,7 +1592,7 @@ class MecaPendant(QWidget):
             self.joystick = None
 
     def _handle_cartesian_joystick(self, x: float, y: float, z: float) -> None:
-        """Handle joystick input in cartesian mode"""
+        """Handle joystick input in cartesian mode with proactive forbidden zone protection"""
         self.update_cartesian_highlights()
 
         if self.joystick_joint_group == 0:
@@ -1449,19 +1601,50 @@ class MecaPendant(QWidget):
             deltas = [0, 0, 0, self.cart_step_deg * x, self.cart_step_deg * y, self.cart_step_deg * z]
 
         if any(d != 0 for d in deltas):
+            # Check current position first
+            current_pose = self.robot.GetPose()
+            if current_pose and self.is_pose_in_forbidden_zone(current_pose):
+                # Already in forbidden zone - block all movements
+                for i in range(6):
+                    self.cart_sliders[i].blockSignals(True)
+                    self.cart_sliders[i].setValue(0)
+                    self.cart_sliders[i].blockSignals(False)
+                return
+
+            # Check if movement is safe before executing
+            if not self.is_movement_safe("cartesian", deltas):
+                # Reset all sliders to center when movement is blocked
+                for i in range(6):
+                    self.cart_sliders[i].blockSignals(True)
+                    self.cart_sliders[i].setValue(0)
+                    self.cart_sliders[i].blockSignals(False)
+                return
+
+            # Additional check: simulate the movement
+            test_pose = self.simulate_cartesian_movement(deltas)
+            if test_pose and self.is_pose_in_forbidden_zone(test_pose):
+                # Would enter forbidden zone - block movement
+                for i in range(6):
+                    self.cart_sliders[i].blockSignals(True)
+                    self.cart_sliders[i].setValue(0)
+                    self.cart_sliders[i].blockSignals(False)
+                self.log("❌ BLOCKED: Joystick cartesian movement would enter forbidden zone")
+                return
+
             try:
                 self.robot.MoveLinRelWrf(*deltas)
                 pose = self.robot.GetPose()
-                for i in range(6):
-                    if not self.cart_inputs[i].hasFocus():
-                        self.cart_inputs[i].setText(f"{pose[i]:.3f}")
-                    # Reflect joystick input on slider visually
-                    scale = self.cart_step_mm if i < 3 else self.cart_step_deg
-                    raw_val = deltas[i] / scale if scale != 0 else 0
-                    slider_val = int(raw_val * SLIDER_RANGE)
-                    self.cart_sliders[i].blockSignals(True)
-                    self.cart_sliders[i].setValue(slider_val)
-                    self.cart_sliders[i].blockSignals(False)
+                if pose:
+                    for i in range(6):
+                        if not self.cart_inputs[i].hasFocus():
+                            self.cart_inputs[i].setText(f"{pose[i]:.3f}")
+                        # Reflect joystick input on slider visually
+                        scale = self.cart_step_mm if i < 3 else self.cart_step_deg
+                        raw_val = deltas[i] / scale if scale != 0 else 0
+                        slider_val = int(raw_val * SLIDER_RANGE)
+                        self.cart_sliders[i].blockSignals(True)
+                        self.cart_sliders[i].setValue(slider_val)
+                        self.cart_sliders[i].blockSignals(False)
             except Exception as e:
                 self.log(f"[ERROR] Cartesian joystick: {e}")
         else:
@@ -1472,18 +1655,28 @@ class MecaPendant(QWidget):
                 self.cart_sliders[i].blockSignals(False)
 
     def _handle_joint_joystick(self, x: float, y: float, z: float) -> None:
-        """Handle joystick input in joint mode"""
+        """Handle joystick input in joint mode with forbidden zone protection"""
         base = 3 if self.joystick_joint_group else 0
         for i, axis_val in enumerate([x, y, z]):
             joint_idx = base + i
             move = axis_val * self.joint_step
             if move != 0:
+                # Create joint movement delta
+                rel = [0.0] * 6
+                rel[joint_idx] = move
+
+                # Check if movement is safe before executing
+                if not self.is_movement_safe("joint", rel):
+                    # Reset slider for this joint
+                    self.joint_sliders[joint_idx].blockSignals(True)
+                    self.joint_sliders[joint_idx].setValue(0)
+                    self.joint_sliders[joint_idx].blockSignals(False)
+                    continue
+
                 try:
-                    rel = [0.0] * 6
-                    rel[joint_idx] = move
                     self.robot.MoveJointsRel(*rel)
                     joints = self.robot.GetJoints()
-                    if not self.joint_inputs[joint_idx].hasFocus():
+                    if joints and not self.joint_inputs[joint_idx].hasFocus():
                         self.joint_inputs[joint_idx].setText(f"{joints[joint_idx]:.3f}")
                     slider_val = int(axis_val * SLIDER_RANGE)
                     self.joint_sliders[joint_idx].blockSignals(True)
@@ -1758,6 +1951,18 @@ class MecaPendant(QWidget):
             if "not connected" not in str(e).lower():
                 self.log(f"[ERROR] update_gripper_slider: {e}")
 
+    def check_forbidden_zone_status(self) -> None:
+        """Check if robot is currently in a forbidden zone and warn user"""
+        try:
+            current_pose = self.robot.GetPose()
+            if current_pose and self.is_pose_in_forbidden_zone(current_pose):
+                self.log("⚠️ WARNING: Robot is currently in a forbidden zone!")
+                self.log("   Manual movements are blocked until robot exits the zone.")
+        except Exception as e:
+            # Don't log connection errors during normal operation
+            if "not connected" not in str(e).lower():
+                self.log(f"[ERROR] check_forbidden_zone_status: {e}")
+
     def check_error_state(self) -> None:
         """Check for robot error state and update UI accordingly"""
         try:
@@ -1771,6 +1976,9 @@ class MecaPendant(QWidget):
                 for slider in self.joint_sliders + self.cart_sliders:
                     slider.setEnabled(False)
                     slider.setValue(0)
+            else:
+                # Check forbidden zone status when robot is not in error
+                self.check_forbidden_zone_status()
 
         except Exception as e:
             # Don't log connection errors during normal operation
