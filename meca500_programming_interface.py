@@ -2,7 +2,6 @@
 Meca500 Programming Interface
 ----------------------------
 """
-
 import os
 import json
 import time
@@ -57,7 +56,7 @@ class StepDialog(QDialog):
         elif step_type == "set_gripper":
             self.type_combo.setCurrentIndex(3)
         elif step_type == "vacuum_on":
-            self.type_combo.setCurrentIndex(4)  # <--- NEW
+            self.type_combo.setCurrentIndex(4)
         elif step_type == "vacuum_off":
             self.type_combo.setCurrentIndex(5)
         elif step_type == "wait":

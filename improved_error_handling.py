@@ -131,12 +131,6 @@ class SafeRobotCommand(QObject):
         """
         Execute a robot command in a non-blocking way.
 
-        Args:
-            command_name: Name of the robot method to call
-            *args, **kwargs: Arguments to pass to the method
-
-        Returns:
-            bool: True if command was started, False otherwise
         """
         if self.running:
             return False

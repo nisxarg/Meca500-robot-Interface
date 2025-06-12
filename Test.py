@@ -1,7 +1,6 @@
 """
-Meca500 Robot Control GUI
+Manual Robot Control GUI
 -------------------------
-
 """
 
 import re
@@ -125,82 +124,85 @@ class ConsoleInterceptor:
         self._stdout.flush()
         self._stderr.flush()
 
-class CameraWindow(QMainWindow):
-    def __init__(self, parent=None):
+class CameraFeed(QLabel):
+    """Individual camera feed widget that can be clicked to maximize"""
+
+    def __init__(self, camera_id, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Camera Feed")
-        self.setMinimumSize(800, 600)
-        self.setWindowFlags(Qt.WindowType.Window)
-
-        self.central_widget = QWidget()
-        self.setCentralWidget(self.central_widget)
-        self.layout = QVBoxLayout(self.central_widget)
-
-        self.camera_label = QLabel()
-        self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.camera_label.setScaledContents(False)  # Keep aspect ratio
-        self.camera_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
-        self.layout.addWidget(self.camera_label)
-
-        self.camera_timer = QTimer()
-        self.camera_timer.timeout.connect(self.update_frame)
+        self.camera_id = camera_id
+        self.parent_window = parent
         self.cap = None
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_frame)
+        self.first_frame_received = False
 
+        # Setup label properties
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setScaledContents(False)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumSize(200, 150)
+        self.setStyleSheet("border: 2px solid gray; background-color: black;")
+        self.setText(f"Camera {camera_id + 1}\nLoading...")
 
+        # Enable mouse events
+        self.setMouseTracking(True)
 
-    def start_camera(self, width=1920, height=1080):
+    def mousePressEvent(self, event):
+        """Handle mouse click to maximize/restore camera"""
+        if event.button() == Qt.MouseButton.LeftButton and self.parent_window:
+            self.parent_window.toggle_camera_maximize(self.camera_id)
+        super().mousePressEvent(event)
+
+    def start_camera(self, width=640, height=480):
+        """Start camera capture in a separate thread"""
         def init_camera():
-            print("[CameraWindow] Starting camera init...")
+            print(f"[CameraFeed] Starting camera {self.camera_id} init...")
 
             # Set loading message from background thread
             QMetaObject.invokeMethod(
-                self.camera_label,
+                self,
                 "setText",
                 Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, "Loading camera feed...")
+                Q_ARG(str, f"Camera {self.camera_id + 1}\nLoading...")
             )
 
-            self.cap = cv2.VideoCapture(2)
+            self.cap = cv2.VideoCapture(self.camera_id+1)
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
 
             if not self.cap.isOpened():
-                print("[CameraWindow] Failed to open camera.")
+                print(f"[CameraFeed] Failed to open camera {self.camera_id}.")
                 QMetaObject.invokeMethod(
-                    self.camera_label,
+                    self,
                     "setText",
                     Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, "❌ Failed to open camera.")
+                    Q_ARG(str, f"Camera {self.camera_id + 1}\n❌ Failed to open")
                 )
                 return
 
-            print("[CameraWindow] Camera opened successfully.")
+            print(f"[CameraFeed] Camera {self.camera_id} opened successfully.")
             self.first_frame_received = False
 
             QMetaObject.invokeMethod(
-                self.camera_timer,
+                self.timer,
                 "start",
                 Qt.ConnectionType.QueuedConnection,
                 Q_ARG(int, 30)
             )
 
-        # Show placeholder before thread starts
-        self.camera_label.setText("Loading camera feed...")
-        self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.camera_label.setStyleSheet("font-size: 20px; color: gray;")
-
         threading.Thread(target=init_camera, daemon=True).start()
 
     def update_frame(self):
+        """Update camera frame"""
         if not self.cap:
             return
+
         ret, frame = self.cap.read()
         if not ret:
             return
 
         if not self.first_frame_received:
-            self.camera_label.clear()
+            self.clear()
             self.first_frame_received = True
 
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -208,15 +210,145 @@ class CameraWindow(QMainWindow):
         bytes_per_line = ch * w
         qt_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
         pixmap = QPixmap.fromImage(qt_img).scaled(
-            self.camera_label.size(), Qt.AspectRatioMode.KeepAspectRatio,
+            self.size(), Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation)
-        self.camera_label.setPixmap(pixmap)
+        self.setPixmap(pixmap)
 
-    def closeEvent(self, event):
-        self.camera_timer.stop()
+    def stop_camera(self):
+        """Stop camera capture and release resources"""
+        self.timer.stop()
         if self.cap:
             self.cap.release()
             self.cap = None
+
+class CameraWindow(QMainWindow):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Multi-Camera Feed")
+        self.setMinimumSize(1000, 800)
+        self.setWindowFlags(Qt.WindowType.Window)
+
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.main_layout = QVBoxLayout(self.central_widget)
+
+        # Create stacked layout for grid and maximized views
+        self.stacked_layout = QStackedLayout()
+
+        # Create grid view widget
+        self.grid_widget = QWidget()
+        self.grid_layout = QGridLayout(self.grid_widget)
+        self.grid_layout.setSpacing(5)
+
+        # Create camera feeds for 4 cameras (IDs 0, 1, 2, 3)
+        self.camera_feeds = []
+        for i in range(4):
+            camera_feed = CameraFeed(i, self)
+            self.camera_feeds.append(camera_feed)
+
+            # Arrange in 2x2 grid
+            row = i // 2
+            col = i % 2
+            self.grid_layout.addWidget(camera_feed, row, col)
+
+        # Create maximized view widget
+        self.maximized_widget = QWidget()
+        self.maximized_layout = QVBoxLayout(self.maximized_widget)
+
+        # Back button for returning to grid view
+        self.back_button = QPushButton("← Back to Grid View")
+        self.back_button.clicked.connect(self.show_grid_view)
+        self.back_button.setMaximumHeight(40)
+        self.maximized_layout.addWidget(self.back_button)
+
+        # Placeholder for maximized camera
+        self.maximized_camera_label = QLabel("Click on a camera to maximize")
+        self.maximized_camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.maximized_camera_label.setStyleSheet("border: 2px solid gray; background-color: black; color: white;")
+        self.maximized_layout.addWidget(self.maximized_camera_label)
+
+        # Add widgets to stacked layout
+        self.stacked_layout.addWidget(self.grid_widget)      # index 0 = grid view
+        self.stacked_layout.addWidget(self.maximized_widget) # index 1 = maximized view
+
+        # Add stacked layout to main layout
+        stacked_container = QWidget()
+        stacked_container.setLayout(self.stacked_layout)
+        self.main_layout.addWidget(stacked_container)
+
+        # Track current state
+        self.current_view = "grid"  # "grid" or "maximized"
+        self.maximized_camera_id = None
+
+        # Timer for maximized view updates
+        self.maximized_timer = QTimer()
+        self.maximized_timer.timeout.connect(self.update_maximized_frame)
+
+    def start_cameras(self, width=640, height=480):
+        """Start all camera feeds"""
+        print("[CameraWindow] Starting all cameras...")
+        for camera_feed in self.camera_feeds:
+            camera_feed.start_camera(width, height)
+
+    def toggle_camera_maximize(self, camera_id):
+        """Toggle between grid view and maximized view for a specific camera"""
+        if self.current_view == "grid":
+            self.show_maximized_view(camera_id)
+        else:
+            self.show_grid_view()
+
+    def show_maximized_view(self, camera_id):
+        """Show maximized view of a specific camera"""
+        self.current_view = "maximized"
+        self.maximized_camera_id = camera_id
+        self.stacked_layout.setCurrentIndex(1)
+
+        # Update back button text
+        self.back_button.setText(f"← Back to Grid View (Camera {camera_id + 1} Maximized)")
+
+        # Start timer for maximized view
+        self.maximized_timer.start(30)
+
+        print(f"[CameraWindow] Maximized camera {camera_id + 1}")
+
+    def show_grid_view(self):
+        """Show grid view with all cameras"""
+        self.current_view = "grid"
+        self.maximized_camera_id = None
+        self.stacked_layout.setCurrentIndex(0)
+
+        # Stop maximized timer
+        self.maximized_timer.stop()
+
+        print("[CameraWindow] Returned to grid view")
+
+    def update_maximized_frame(self):
+        """Update the maximized camera frame"""
+        if self.maximized_camera_id is None:
+            return
+
+        camera_feed = self.camera_feeds[self.maximized_camera_id]
+        if not camera_feed.cap:
+            return
+
+        ret, frame = camera_feed.cap.read()
+        if not ret:
+            return
+
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = frame.shape
+        bytes_per_line = ch * w
+        qt_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(qt_img).scaled(
+            self.maximized_camera_label.size(), Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation)
+        self.maximized_camera_label.setPixmap(pixmap)
+
+    def closeEvent(self, event):
+        """Clean up when window is closed"""
+        self.maximized_timer.stop()
+        for camera_feed in self.camera_feeds:
+            camera_feed.stop_camera()
         event.accept()
 
 class MecaPendant(QWidget):
@@ -248,7 +380,7 @@ class MecaPendant(QWidget):
             ((200, 0, 308), (300, -130, 200)),  # Example box 1
             ((61, -298, 34), (-126, -114, 121))  # Example box 2
         ]
-
+        self._current_forbidden_zone = None
         self.first_frame_received = False
         self.camera_label.setText("Loading camera feed...")
         self.camera_label.setStyleSheet("font-size: 20px; color: gray;")
@@ -298,34 +430,31 @@ class MecaPendant(QWidget):
         self.highlight_joint_group()
 
     def is_pose_in_forbidden_zone(self, pose: List[float]) -> bool:
-        """Check if a pose (x,y,z,rx,ry,rz) is inside any forbidden zone"""
+        """Call this ONCE per actual new robot pose!"""
         if not pose or len(pose) < 3:
             return False
 
         x, y, z = pose[:3]
+        zone_now = None
+
+        # Determine which forbidden zone (if any) the pose is in
         for idx, (c1, c2) in enumerate(self.forbidden_zones):
             x_min, x_max = sorted([c1[0], c2[0]])
             y_min, y_max = sorted([c1[1], c2[1]])
             z_min, z_max = sorted([c1[2], c2[2]])
-
             if x_min <= x <= x_max and y_min <= y <= y_max and z_min <= z <= z_max:
-                zone_name = chr(65 + idx)  # A, B, C, etc.
+                zone_now = chr(65 + idx)
+                break  # Only one zone at a time
 
-                # Debounce the logging to avoid spam
-                current_time = time.time()
-                log_key = f"zone_{zone_name}_{x:.1f}_{y:.1f}_{z:.1f}"
+        # State machine: only log on transitions
+        if zone_now != self._current_forbidden_zone:
+            if self._current_forbidden_zone is not None:
+                self.log(f"✅ Exited forbidden zone '{self._current_forbidden_zone}'")
+            if zone_now is not None:
+                self.log(f"❌ Entered forbidden zone '{zone_now}': ({x:.1f}, {y:.1f}, {z:.1f})")
+            self._current_forbidden_zone = zone_now
 
-                if not hasattr(self, '_zone_log_times'):
-                    self._zone_log_times = {}
-
-                last_log_time = self._zone_log_times.get(log_key, 0)
-                if current_time - last_log_time > 2.0:  # Only log every 2 seconds
-                    self.log(f"❌ Position in forbidden zone '{zone_name}': ({x:.1f}, {y:.1f}, {z:.1f})", level="debug")
-                    self._zone_log_times[log_key] = current_time
-
-                return True
-        return False
-
+        return zone_now is not None
     def simulate_joint_movement(self, joint_deltas: List[float]) -> List[float]:
         """Simulate what the robot pose would be after applying joint deltas"""
         try:
@@ -719,12 +848,12 @@ class MecaPendant(QWidget):
     def toggle_camera_view(self):
         if hasattr(self, 'camera_window') and self.camera_window.isVisible():
             self.camera_window.close()
-            self.log("Camera window closed.")
+            self.log("Multi-camera window closed.")
         else:
             self.camera_window = CameraWindow(self)
             self.camera_window.show()
-            QTimer.singleShot(100, self.camera_window.start_camera)  # Slight delay to avoid UI lag
-            self.log("Camera window opened.")
+            QTimer.singleShot(100, self.camera_window.start_cameras)  # Slight delay to avoid UI lag
+            self.log("Multi-camera window opened with 4 camera feeds.")
 
     def update_camera_frame(self):
         if not self.camera_capture:

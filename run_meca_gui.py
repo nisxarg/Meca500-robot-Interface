@@ -1,10 +1,9 @@
 """
-Meca500 GUI with Improved Error Handling
+Meca500 GUI
 ---------------------------------------
-Entry point for the Meca500 GUI with improved error handling.
+Entry point for the Meca500 GUI.
 
-This module serves as the main entry point for the Meca500 robot control application
-with enhanced error handling capabilities.
+This module serves as the main entry point for the Meca500 robot control application.
 """
 import sys
 import traceback
