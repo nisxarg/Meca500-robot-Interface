@@ -414,14 +414,14 @@ class MecaPendant(QWidget):
         self.camera_timer.timeout.connect(self.update_camera_frame)
         self.camera_capture = None
 
-
-
         self._init_state_variables()
         self._init_timers()
         self._init_joystick()
 
         # Build the rest of the UI (now console_container is ready)
         self._build_ui()
+        self.setWindowState(Qt.WindowState.WindowMaximized)
+        self.setMinimumSize(1024, 768)
 
         # Set control mode defaults
         self.update_control_buttons()

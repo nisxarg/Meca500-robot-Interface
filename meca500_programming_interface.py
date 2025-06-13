@@ -405,17 +405,17 @@ class ProgrammingInterface(QWidget):
     # Signal to update console in main GUI
     console_update = pyqtSignal(str)
 
-    def __init__(self, robot=None):
-        super().__init__()
+    def __init__(self, parent=None, robot=None):
+        super().__init__(parent)
         self.robot = robot
         self.program_steps = []
         self.current_step_index = -1
         self.running = False
         self.program_file = None
-        self.gripper_state = "unknown"  # "open", "closed", "partial", "unknown"
-        self.loop_stack = []  # Stack to track nested loops
-        self.command_complete = True  # Flag to track if current command is complete
-        self.robot_state_synced = False  # Flag to track if robot state has been synced
+        self.gripper_state = None
+        self.loop_stack = []
+        self.command_complete = True
+        self.robot_state_synced = False
 
         self.init_ui()
 
@@ -549,6 +549,9 @@ class ProgrammingInterface(QWidget):
         self.reset_error_btn.setVisible(False)
         main_layout.addWidget(self.reset_error_btn)
 
+        self.gripper_state_label = QLabel("Gripper: Unknown")
+        self.gripper_state_label.setStyleSheet("color: gray;")
+
         # Initialize timer for program execution
         self.timer = QTimer()
         self.timer.setSingleShot(True)
@@ -568,9 +571,7 @@ class ProgrammingInterface(QWidget):
         self.error_timer = QTimer()
         self.error_timer.setSingleShot(True)
         self.error_timer.timeout.connect(lambda: self.error_label.setVisible(False))
-        self.gripper_state_label = QLabel("Gripper: Unknown")
-        self.gripper_state_label.setStyleSheet("color: #ccc; font-style: italic;")
-        main_layout.addWidget(self.gripper_state_label)
+
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #aaa; font-style: italic;")
@@ -1146,6 +1147,7 @@ class ProgrammingInterface(QWidget):
             user_msg = self.friendly_robot_error_message(e)
             self.log_to_console(user_msg)
             self.show_error(user_msg)
+
     def execute_open_gripper_step(self):
         """Execute an open gripper step"""
         if not self.robot:
@@ -1153,9 +1155,28 @@ class ProgrammingInterface(QWidget):
 
         try:
             self.robot.SendCustomCommand("GripperOpen")
+
+            # Wait for gripper operation to complete (add timeout)
+            max_attempts = 50  # 5 seconds timeout (50 * 0.1)
+            attempts = 0
+            while attempts < max_attempts:
+                status = self.robot.GetStatusRobot()
+                if hasattr(status, "gripper_opened") and status.gripper_opened:
+                    break
+                time.sleep(0.1)
+                attempts += 1
+
+            if attempts >= max_attempts:
+                raise Exception("Timeout waiting for gripper to open")
+
             self.gripper_state = "open"
             self.update_gripper_state_label()
-            self.log_to_console("Opening gripper")
+            self.log_to_console("Gripper opened successfully")
+
+            # Force update the UI
+            if hasattr(self.robot, "update_gripper_slider"):
+                self.robot.update_gripper_slider()
+
         except Exception as e:
             self.log_to_console(f"Gripper error: {e}")
             raise
@@ -1169,7 +1190,16 @@ class ProgrammingInterface(QWidget):
             self.robot.SendCustomCommand("GripperClose")
             self.gripper_state = "closed"
             self.update_gripper_state_label()
-            self.log_to_console("Closing gripper")
+
+            # Use QTimer for non-blocking delay
+            def delayed_update():
+                if hasattr(self.robot, "update_gripper_slider"):
+                    self.robot.update_gripper_slider()
+                self.log_to_console("Gripper closed successfully")
+
+            QTimer.singleShot(500, delayed_update)
+            self.log_to_console("Closing gripper...")
+
         except Exception as e:
             self.log_to_console(f"Gripper error: {e}")
             raise
@@ -1423,17 +1453,16 @@ class ProgrammingInterface(QWidget):
 
     def update_gripper_state_label(self):
         """Update the gripper state label"""
-        if self.gripper_state == "open":
+        if not hasattr(self, 'gripper_state_label'):
+            return
 
+        if self.gripper_state == "open":
             self.gripper_state_label.setStyleSheet("color: green;")
         elif self.gripper_state == "closed":
-
             self.gripper_state_label.setStyleSheet("color: red;")
         elif self.gripper_state == "partial":
-
             self.gripper_state_label.setStyleSheet("color: orange;")
         else:
-
             self.gripper_state_label.setStyleSheet("color: gray;")
 
     def show_error(self, message):
@@ -1442,13 +1471,26 @@ class ProgrammingInterface(QWidget):
         self._last_error_message = message
         self.log_to_console(f"ERROR: {message}")
 
-        self.log_to_console(f"ERROR: {message}")
+        # Store current size
+        current_size = self.window().size()
+
+        # Update error display
         self.error_label.setText(message)
         self.error_label.setVisible(True)
         self.reset_error_btn.setVisible(False)
+
+        # Force the window to maintain its size
+        self.window().setFixedSize(current_size)
+
         if self.running:
             self.stop_program()
+
+        # Start error timer
         self.error_timer.start(5000)
+
+        # Reset size constraints after error display
+        QTimer.singleShot(5100, lambda: self.window().setFixedSize(16777215, 16777215))
+
     def reset_error(self):
         """Reset the error state"""
         # Disable the reset button immediately to prevent double-clicks
