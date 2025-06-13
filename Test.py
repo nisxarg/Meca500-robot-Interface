@@ -414,6 +414,8 @@ class MecaPendant(QWidget):
         self.camera_timer.timeout.connect(self.update_camera_frame)
         self.camera_capture = None
 
+
+
         self._init_state_variables()
         self._init_timers()
         self._init_joystick()
