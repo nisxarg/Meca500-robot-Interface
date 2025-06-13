@@ -1,6 +1,7 @@
 """
 Manual Robot Control GUI
 -------------------------
+
 """
 
 import re
@@ -15,7 +16,7 @@ from PyQt6.QtWidgets import QStackedLayout
 import time
 import sys
 from functools import partial
-from typing import List, Callable
+from typing import List, Callable, Dict
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QHBoxLayout,
     QSlider, QTextEdit, QGridLayout, QPushButton, QTabWidget,
@@ -166,7 +167,7 @@ class CameraFeed(QLabel):
                 Q_ARG(str, f"Camera {self.camera_id + 1}\nLoading...")
             )
 
-            self.cap = cv2.VideoCapture(self.camera_id+1)
+            self.cap = cv2.VideoCapture(self.camera_id)
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
 
@@ -359,9 +360,13 @@ class MecaPendant(QWidget):
     def __init__(self):
         super().__init__()
 
+
         # Setup window properties
         self.setWindowTitle("Versacell Robotic System")
-        self.resize(1000, 700)
+
+
+        #  dark theme to the entire application
+        self._apply_dark_theme()
 
         # Initialize robot connection
         self.robot = Robot()
@@ -369,7 +374,7 @@ class MecaPendant(QWidget):
         # Create console and camera widgets
         self.console = QTextEdit()
         self.console.setReadOnly(True)
-        self.console.setStyleSheet("font-family: Consolas; font-size: 11px; color: lightgreen;")
+        self.console.setStyleSheet("font-family: Consolas; font-size: 11px; color: #00ff00; background-color: #1e1e1e; border: 1px solid #555555;")
 
         self.camera_label = QLabel()
         self.camera_label.setMinimumSize(640, 480)
@@ -383,10 +388,7 @@ class MecaPendant(QWidget):
         self._current_forbidden_zone = None
         self.first_frame_received = False
         self.camera_label.setText("Loading camera feed...")
-        self.camera_label.setStyleSheet("font-size: 20px; color: gray;")
-
-
-        self.camera_label.setStyleSheet("background-color: black;")
+        self.camera_label.setStyleSheet("font-size: 20px; color: #cccccc; background-color: #1e1e1e; border: 1px solid #555555;")
 
         # Stack console and camera in the same space
         self.console_camera_stack = QStackedLayout()
@@ -419,15 +421,149 @@ class MecaPendant(QWidget):
         # Build the rest of the UI (now console_container is ready)
         self._build_ui()
 
-        # Add status bar
-        self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("color: lightgreen;")
-        self.layout().addWidget(self.status_label)
-
         # Set control mode defaults
         self.update_control_buttons()
         self.set_control_mode("mouse")
         self.highlight_joint_group()
+
+    def _apply_dark_theme(self):
+        """Apply a refined dark theme to the entire application"""
+        dark_style = """
+        QWidget {
+            background-color: #2b2b2b;
+            color: #ffffff;
+            font-family: Arial, sans-serif;
+        }
+        
+        QMainWindow {
+            background-color: #1e1e1e;
+        }
+        
+        QGroupBox {
+            background-color: #3c3c3c;
+            border: 1px solid #555555;
+            border-radius: 6px;
+            margin-top: 1ex;
+            font-weight: bold;
+            padding-top: 10px;
+        }
+        
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 10px;
+            padding: 0 5px 0 5px;
+            color: #ffffff;
+        }
+        
+        QPushButton {
+            background-color: #404040;
+            border: 1px solid #606060;
+            border-radius: 4px;
+            padding: 6px 12px;
+            color: #ffffff;
+            font-weight: normal;
+        }
+        
+        QPushButton:hover {
+            background-color: #505050;
+            border-color: #707070;
+        }
+        
+        QPushButton:pressed {
+            background-color: #353535;
+            border-color: #505050;
+        }
+        
+        QPushButton:checked {
+            background-color: #0078d4;
+            border-color: #106ebe;
+            color: white;
+        }
+        
+        QSlider::groove:horizontal {
+            border: 1px solid #555555;
+            height: 8px;
+            background: #2b2b2b;
+            margin: 2px 0;
+            border-radius: 4px;
+        }
+        
+        QSlider::handle:horizontal {
+            background: #0078d4;
+            border: 1px solid #106ebe;
+            width: 18px;
+            margin: -5px 0;
+            border-radius: 9px;
+        }
+        
+        QSlider::handle:horizontal:hover {
+            background: #106ebe;
+        }
+        
+        QLineEdit {
+            background-color: #404040;
+            border: 1px solid #606060;
+            border-radius: 4px;
+            padding: 4px 8px;
+            color: #ffffff;
+        }
+        
+        QLineEdit:focus {
+            border-color: #0078d4;
+        }
+        
+        QLabel {
+            color: #ffffff;
+            background-color: transparent;
+        }
+        
+        QTabWidget::pane {
+            border: 1px solid #555555;
+            background-color: #3c3c3c;
+        }
+        
+        QTabBar::tab {
+            background-color: #404040;
+            border: 1px solid #606060;
+            padding: 8px 16px;
+            margin-right: 2px;
+            color: #ffffff;
+        }
+        
+        QTabBar::tab:selected {
+            background-color: #0078d4;
+            border-color: #106ebe;
+            color: white;
+        }
+        
+        QTabBar::tab:hover {
+            background-color: #505050;
+        }
+        
+        QTextEdit {
+            background-color: #2b2b2b;
+            border: 1px solid #555555;
+            color: #ffffff;
+        }
+        
+        QScrollBar:vertical {
+            background-color: #3c3c3c;
+            width: 12px;
+            border-radius: 6px;
+        }
+        
+        QScrollBar::handle:vertical {
+            background-color: #606060;
+            border-radius: 6px;
+            min-height: 20px;
+        }
+        
+        QScrollBar::handle:vertical:hover {
+            background-color: #707070;
+        }
+        """
+
+        self.setStyleSheet(dark_style)
 
     def is_pose_in_forbidden_zone(self, pose: List[float]) -> bool:
         """Call this ONCE per actual new robot pose!"""
@@ -641,10 +777,6 @@ class MecaPendant(QWidget):
 
         left_panel = self._create_left_panel()
 
-        self.detect_tool_btn = QPushButton("Switch to Vacuum/Gripper")
-        self.detect_tool_btn.clicked.connect(self.toggle_tool_type)
-        left_panel.addWidget(self.detect_tool_btn)
-
         right_panel = self._create_right_panel()
         status_bar = self._create_status_bar()
 
@@ -783,8 +915,10 @@ class MecaPendant(QWidget):
     def _create_gripper_control_group(self) -> QGroupBox:
         """Create the gripper control group"""
         gripper_box = QGroupBox("Gripper Control")
-        gripper_layout = QHBoxLayout()
+        gripper_layout = QVBoxLayout()
 
+        # First row: Gripper percentage slider
+        slider_row = QHBoxLayout()
         gripper_label = QLabel("Gripper %")
         gripper_label.setFixedWidth(70)
 
@@ -800,10 +934,17 @@ class MecaPendant(QWidget):
         self.gripper_value_label.setFixedWidth(40)
         self.gripper_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        gripper_layout.addWidget(gripper_label)
-        gripper_layout.addWidget(self.gripper_slider, 1)
-        gripper_layout.addWidget(self.gripper_value_label)
+        slider_row.addWidget(gripper_label)
+        slider_row.addWidget(self.gripper_slider, 1)
+        slider_row.addWidget(self.gripper_value_label)
 
+        # Second row: Switch button
+        self.detect_tool_btn = QPushButton("Switch to Vacuum/Gripper")
+        self.detect_tool_btn.clicked.connect(self.toggle_tool_type)
+        self.detect_tool_btn.setMaximumHeight(30)
+
+        gripper_layout.addLayout(slider_row)
+        gripper_layout.addWidget(self.detect_tool_btn)
         gripper_box.setLayout(gripper_layout)
         return gripper_box
 
@@ -826,14 +967,24 @@ class MecaPendant(QWidget):
 
         right_panel.addWidget(self.console_container, stretch=1)
 
-        clear_console_button = QPushButton("Clear Console")
-        clear_console_button.clicked.connect(self.console.clear)
-        right_panel.addWidget(clear_console_button)
+        # ✅ Compact button row for Clear Console and Toggle Camera View
+        button_row_layout = QHBoxLayout()
 
-        # ✅ Toggle camera button
-        toggle_cam_btn = QPushButton("Toggle Camera View")
+        clear_console_button = QPushButton("Clear")
+        clear_console_button.setMaximumWidth(80)
+        clear_console_button.clicked.connect(self.console.clear)
+        button_row_layout.addWidget(clear_console_button)
+
+        toggle_cam_btn = QPushButton("Camera")
+        toggle_cam_btn.setMaximumWidth(80)
         toggle_cam_btn.clicked.connect(self.toggle_camera_view)
-        right_panel.addWidget(toggle_cam_btn)
+        button_row_layout.addWidget(toggle_cam_btn)
+
+        button_row_layout.addStretch()  # Push buttons to the left
+
+        button_row_widget = QWidget()
+        button_row_widget.setLayout(button_row_layout)
+        right_panel.addWidget(button_row_widget)
 
         # ✅ Add robot programming interface
         from meca500_programming_interface import add_programming_interface_to_gui
@@ -927,6 +1078,9 @@ class MecaPendant(QWidget):
             btn1.setToolTip("Open the mechanical gripper")
             btn2.setToolTip("Close the mechanical gripper")
 
+        # Update the status label to reflect current tool type
+        self.update_gripper_label(self.gripper_open)
+
     def handle_end_effector_btn1(self):
         if self.is_vacuum_tool:
             self.vacuum_on()
@@ -969,7 +1123,7 @@ class MecaPendant(QWidget):
         self.mode_label = QLabel("🖱️ Mouse Mode")
         self.mode_label.setStyleSheet("color: white;")
 
-        self.gripper_label = QLabel("🧲 Gripper: Unknown")
+        self.gripper_label = QLabel("🧲 Gripper: Closed")
         self.gripper_label.setStyleSheet("color: white;")
 
         self.activate_label = QLabel("⛔ Inactive")
@@ -1172,6 +1326,8 @@ class MecaPendant(QWidget):
             right.pressed.connect(partial(self.nudge_cart, i, 1))
             slider.sliderPressed.connect(partial(self.set_slider_active, self.cart_active, i, True))
             slider.sliderReleased.connect(partial(self.release_slider, self.cart_sliders, self.cart_active, i))
+            # Add valueChanged connection for cartesian sliders
+            slider.valueChanged.connect(partial(self.cart_slider_changed, i))
 
             self.cart_sliders.append(slider)
 
@@ -1187,6 +1343,15 @@ class MecaPendant(QWidget):
 
         tab.setLayout(layout)
         self.tabs.addTab(tab, "Cartesian Jog")
+
+    def cart_slider_changed(self, axis_idx: int, value: int) -> None:
+        """Handle cartesian slider value changes"""
+        if value != 0:
+            # Activate the slider when moved from center
+            self.set_slider_active(self.cart_active, axis_idx, True)
+        else:
+            # Deactivate when returned to center
+            self.set_slider_active(self.cart_active, axis_idx, False)
 
     def set_joint_from_input(self, idx: int) -> None:
         """Set joint position from input field value with forbidden zone protection"""
@@ -1359,80 +1524,72 @@ class MecaPendant(QWidget):
             return 50
 
     def cartesian_jog_loop(self) -> None:
-        """Cartesian jog loop with proactive forbidden zone protection"""
+        """Cartesian jog loop with proper movement handling"""
         try:
-            status = self.robot.GetStatusRobot()
-            status = self.robot.GetStatusRobot()
-            if status is None or not hasattr(status, "rt_target_cart_pos"):
+            # Skip if robot not ready
+            if not self.robot or not self.robot.IsConnected():
                 return
 
-            current_pose = self.robot.GetPose()
-            if not current_pose or len(current_pose) < 6:
-                # Handle case where GetPose() returns None or incomplete data
-                return
-
-            # Check if already in forbidden zone - if so, block all movements
-            if self.is_pose_in_forbidden_zone(current_pose):
-                for i in range(6):
-                    if self.cart_active[i]:
-                        self.cart_active[i] = False
-                        self.cart_sliders[i].blockSignals(True)
-                        self.cart_sliders[i].setValue(0)
-                        self.cart_sliders[i].blockSignals(False)
-                return
-
+            # Process each axis
             for i in range(6):
-                if not self.cart_active[i]:
-                    continue
-
                 val = self.cart_sliders[i].value()
                 if val == 0:
+                    continue  # Skip inactive axes
+
+                # Determine movement parameters
+                direction = 1 if val > 0 else -1
+                step_size = self.cart_step_mm if i < 3 else self.cart_step_deg
+                move = [0.0] * 6
+                move[i] = step_size * direction
+
+                # Get current position for safety checks
+                try:
+                    current_pose = self.robot.GetPose()
+                    if not current_pose:
+                        continue
+                except Exception as e:
+                    self.log(f"Error getting pose: {e}")
                     continue
 
+                # Check if already in forbidden zone
+                if self.is_pose_in_forbidden_zone(current_pose):
+                    self.log("⚠️ Movement blocked: In forbidden zone")
+                    self.cart_sliders[i].setValue(0)
+                    continue
+
+                # Check if movement would enter forbidden zone
+                new_pose = self.simulate_cartesian_movement(move)
+                if new_pose and self.is_pose_in_forbidden_zone(new_pose):
+                    self.log(f"❌ Movement blocked: Would enter forbidden zone (axis {i + 1})")
+                    self.cart_sliders[i].setValue(0)
+                    continue
+
+                # Execute the movement
                 try:
-                    direction = 1 if val > 0 else -1
-                    full_step = self.cart_step_mm if i < 3 else self.cart_step_deg
+                    if i < 3:  # X, Y, Z - linear movement
+                        self.robot.MoveLinRelWrf(*move)
+                    else:  # Rx, Ry, Rz - rotational movement
+                        self.robot.MoveLinRelWrf(*move)
 
-                    # Create movement delta for this step
-                    step_vals = [0.0] * 6
-                    step_vals[i] = full_step * direction
-
-                    # Simulate the movement to check if it would enter forbidden zone
-                    test_pose = self.simulate_cartesian_movement(step_vals)
-                    if not test_pose or self.is_pose_in_forbidden_zone(test_pose):
-                        # Would enter forbidden zone - block movement
-                        self.cart_active[i] = False
-                        self.cart_sliders[i].blockSignals(True)
-                        self.cart_sliders[i].setValue(0)
-                        self.cart_sliders[i].blockSignals(False)
-                        # Only log once per axis to avoid spam
-                        if not hasattr(self, '_cart_blocked_axes'):
-                            self._cart_blocked_axes = set()
-                        if i not in self._cart_blocked_axes:
-                            self.log(f"❌ BLOCKED: Cartesian movement on axis {i+1} would enter forbidden zone")
-                            self._cart_blocked_axes.add(i)
-                        continue
-
-                    # Clear the blocked status for this axis if movement is now safe
-                    if hasattr(self, '_cart_blocked_axes') and i in self._cart_blocked_axes:
-                        self._cart_blocked_axes.remove(i)
-
-                    # Movement is safe - execute it
-                    self.robot.MoveLinRelWrf(*step_vals)
-                    updated_pose = self.robot.GetPose()
-                    if updated_pose and len(updated_pose) >= 6 and not self.cart_inputs[i].hasFocus():
-                        self.cart_inputs[i].setText(f"{updated_pose[i]:.3f}")
+                    # Update position display
+                    new_pose = self.robot.GetPose()
+                    if new_pose and not self.cart_inputs[i].hasFocus():
+                        self.cart_inputs[i].setText(f"{new_pose[i]:.3f}")
 
                 except Exception as e:
-                    self.log(f"[ERROR] Jog axis {i}: {e}")
-                    # On error, stop this axis
-                    self.cart_active[i] = False
-                    self.cart_sliders[i].blockSignals(True)
+                    self.log(f"Movement error (axis {i + 1}): {e}")
                     self.cart_sliders[i].setValue(0)
-                    self.cart_sliders[i].blockSignals(False)
 
         except Exception as e:
-            self.log(f"[ERROR] cartesian_jog_loop failure: {e}")
+            self.log(f"Cartesian jog error: {e}")
+
+    def handle_cart_slider_change(self, axis_idx: int, value: int) -> None:
+        """Handle cartesian slider changes (call this when slider moves)"""
+        if value != 0:
+            self.cart_active[axis_idx] = True  # Mark axis as active
+            self.cartesian_jog_loop()  # Trigger movement
+        else:
+            self.cart_active[axis_idx] = False  # Reset when slider returns to center
 
     def update_joint_and_pose_inputs(self) -> None:
         """Update both joint and pose displays"""
@@ -1452,14 +1609,22 @@ class MecaPendant(QWidget):
                 self.log(f"[ERROR] {e}")
 
     def update_gripper_label(self, opened: bool) -> None:
-        """Update the gripper status label"""
+        """Update the gripper/vacuum status label based on tool type"""
         self.gripper_open = opened
-        if opened:
-            self.gripper_label.setText("🧲 Gripper: Open")
-            self.gripper_label.setStyleSheet("color: lightgreen;")
+        if self.is_vacuum_tool:
+            if opened:
+                self.gripper_label.setText("🔵 Vacuum: On")
+                self.gripper_label.setStyleSheet("color: lightblue;")
+            else:
+                self.gripper_label.setText("⚫ Vacuum: Off")
+                self.gripper_label.setStyleSheet("color: gray;")
         else:
-            self.gripper_label.setText("🧲 Gripper: Closed")
-            self.gripper_label.setStyleSheet("color: red;")
+            if opened:
+                self.gripper_label.setText("🧲 Gripper: Open")
+                self.gripper_label.setStyleSheet("color: lightgreen;")
+            else:
+                self.gripper_label.setText("🧲 Gripper: Closed")
+                self.gripper_label.setStyleSheet("color: red;")
 
     def open_gripper(self) -> None:
         """Open the gripper"""
@@ -1654,6 +1819,10 @@ class MecaPendant(QWidget):
                 raise RuntimeError("Joystick not connected")
 
             x, y, z = self.joystick.get_axis(0), self.joystick.get_axis(1), self.joystick.get_axis(2)
+            # Check if joystick has additional axes for RX, RY, RZ
+            rx, ry, rz = 0, 0, 0
+            if self.joystick.get_numaxes() >= 6:
+                rx, ry, rz = self.joystick.get_axis(3), self.joystick.get_axis(4), self.joystick.get_axis(5)
             current_buttons = [self.joystick.get_button(i) for i in range(self.joystick.get_numbuttons())]
 
             # Initialize button states if needed
@@ -1708,9 +1877,10 @@ class MecaPendant(QWidget):
             deadzone = 0.1
             apply_deadzone = lambda v: v if abs(v) > deadzone else 0.0
             x, y, z = map(apply_deadzone, [x, y, z])
+            rx, ry, rz = map(apply_deadzone, [rx, ry, rz])
 
             if self.joystick_submode == "cartesian":
-                self._handle_cartesian_joystick(x, y, z)
+                self._handle_cartesian_joystick(x, y, z, rx, ry, rz)
             else:  # joint mode
                 self._handle_joint_joystick(x, y, z)
 
@@ -1720,14 +1890,19 @@ class MecaPendant(QWidget):
                 self.log(f"[ERROR] joystick_loop: {e}")
             self.joystick = None
 
-    def _handle_cartesian_joystick(self, x: float, y: float, z: float) -> None:
+    def _handle_cartesian_joystick(self, x: float, y: float, z: float, rx: float = 0, ry: float = 0, rz: float = 0) -> None:
         """Handle joystick input in cartesian mode with proactive forbidden zone protection"""
         self.update_cartesian_highlights()
 
-        if self.joystick_joint_group == 0:
-            deltas = [self.cart_step_mm * x, self.cart_step_mm * y, self.cart_step_mm * z, 0, 0, 0]
-        else:
-            deltas = [0, 0, 0, self.cart_step_deg * x, self.cart_step_deg * y, self.cart_step_deg * z]
+        # Use all 6 axes directly for cartesian movement
+        deltas = [
+            self.cart_step_mm * -x,  # X (inverted to fix direction)
+            self.cart_step_mm * y,   # Y
+            self.cart_step_mm * z,   # Z
+            self.cart_step_deg * rx, # RX
+            self.cart_step_deg * ry, # RY
+            self.cart_step_deg * rz  # RZ
+        ]
 
         if any(d != 0 for d in deltas):
             # Check current position first

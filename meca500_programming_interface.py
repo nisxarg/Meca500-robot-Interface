@@ -535,11 +535,6 @@ class ProgrammingInterface(QWidget):
         # Progress bar for step execution
 
 
-        # Status label
-        self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("color: lightgreen;")
-        main_layout.addWidget(self.status_label)
-
         # Error message label
         self.error_label = QLabel("")
         self.error_label.setStyleSheet("color: red; background-color: #ffeeee; padding: 5px;")
@@ -553,11 +548,6 @@ class ProgrammingInterface(QWidget):
         self.reset_error_btn.clicked.connect(self.reset_error)
         self.reset_error_btn.setVisible(False)
         main_layout.addWidget(self.reset_error_btn)
-
-        # Gripper state indicator
-        self.gripper_state_label = QLabel("Gripper: Unknown")
-        self.gripper_state_label.setStyleSheet("color: gray;")
-        main_layout.addWidget(self.gripper_state_label)
 
         # Initialize timer for program execution
         self.timer = QTimer()
@@ -702,7 +692,6 @@ class ProgrammingInterface(QWidget):
         clipboard.setText(clipboard_text)
 
         self.status_label.setText("Step copied to clipboard")
-        QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
 
     def paste_step(self):
         """Paste a step from clipboard"""
@@ -719,7 +708,6 @@ class ProgrammingInterface(QWidget):
             self.steps_list.setCurrentRow(len(self.program_steps) - 1)
 
             self.status_label.setText("Step pasted from clipboard")
-            QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
         except Exception as e:
             self.show_error(f"Error pasting step: {e}")
 
@@ -754,7 +742,6 @@ class ProgrammingInterface(QWidget):
             self.steps_list.setCurrentRow(len(self.program_steps) - 1)
 
             self.status_label.setText("Position recorded")
-            QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
 
         except Exception as e:
             self.show_error(f"Error recording position: {e}")
@@ -782,7 +769,6 @@ class ProgrammingInterface(QWidget):
             self.run_btn.setEnabled(len(self.program_steps) > 0)
 
             self.status_label.setText(f"Program loaded from {os.path.basename(file_path)}")
-            QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
 
         except Exception as e:
             self.show_error(f"Error loading program: {e}")
@@ -810,7 +796,6 @@ class ProgrammingInterface(QWidget):
 
             self.program_file = file_path
             self.status_label.setText(f"Program saved to {os.path.basename(file_path)}")
-            QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
 
         except Exception as e:
             self.show_error(f"Error saving program: {e}")
@@ -1264,7 +1249,6 @@ class ProgrammingInterface(QWidget):
         self.status_label.setText("Program stopped")
         self.update_ui_state()
 
-        QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
 
     def program_completed(self):
         """Called when the program is completed"""
@@ -1286,7 +1270,6 @@ class ProgrammingInterface(QWidget):
         self.update_ui_state()
 
         # Update status after a delay
-        QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
 
     def update_steps_list(self):
         """Update the steps list widget"""
@@ -1403,7 +1386,6 @@ class ProgrammingInterface(QWidget):
                 # Success!
                 self.log_to_console("Homing completed successfully")
                 self.status_label.setText("Robot homed successfully")
-                QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
 
             except Exception as home_err:
                 self.log_to_console(f"Homing error: {home_err}")
@@ -1436,16 +1418,16 @@ class ProgrammingInterface(QWidget):
     def update_gripper_state_label(self):
         """Update the gripper state label"""
         if self.gripper_state == "open":
-            self.gripper_state_label.setText("Gripper: Open")
+
             self.gripper_state_label.setStyleSheet("color: green;")
         elif self.gripper_state == "closed":
-            self.gripper_state_label.setText("Gripper: Closed")
+
             self.gripper_state_label.setStyleSheet("color: red;")
         elif self.gripper_state == "partial":
-            self.gripper_state_label.setText("Gripper: Partially Open")
+
             self.gripper_state_label.setStyleSheet("color: orange;")
         else:
-            self.gripper_state_label.setText("Gripper: Unknown")
+
             self.gripper_state_label.setStyleSheet("color: gray;")
 
     def show_error(self, message):
@@ -1531,7 +1513,6 @@ class ProgrammingInterface(QWidget):
 
                     # Update status
                     self.status_label.setText("Robot error reset complete")
-                    QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
 
                 except Exception as inner_err:
                     self.log_to_console(f"Error during reset sequence: {inner_err}")
@@ -1544,7 +1525,6 @@ class ProgrammingInterface(QWidget):
                 self.status_label.setText("Error reset failed")
 
         # Re-enable the reset button after a delay to prevent accidental double-clicks
-        QTimer.singleShot(2000, lambda: self.reset_error_btn.setEnabled(True))
 
     def sync_robot_state(self):
         if not self.robot:
@@ -1661,7 +1641,7 @@ class MovementTypeHelpDialog(QDialog):
         recommendation.setWordWrap(True)
         layout.addWidget(recommendation)
 
-        # Add close button
+        # Add close button clos
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
