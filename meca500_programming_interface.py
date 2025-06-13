@@ -569,6 +569,9 @@ class ProgrammingInterface(QWidget):
         self.error_timer.setSingleShot(True)
         self.error_timer.timeout.connect(lambda: self.error_label.setVisible(False))
 
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: #aaa; font-style: italic;")
+        main_layout.addWidget(self.status_label)
         # Update UI state
         self.update_ui_state()
 
