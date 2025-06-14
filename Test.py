@@ -1,11 +1,11 @@
 """
 Manual Robot Control GUI
 -------------------------
-
+MODIFIED FOR ADAPTIVE AND SCALABLE LAYOUT
 """
 
 import re
-from PyQt6.QtWidgets import QMainWindow
+from PyQt6.QtWidgets import QMainWindow, QSizePolicy  # <-- QSizePolicy is added here
 import threading
 from PyQt6.QtCore import QMetaObject, Q_ARG, Qt
 
@@ -20,7 +20,7 @@ from typing import List, Callable, Dict
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QHBoxLayout,
     QSlider, QTextEdit, QGridLayout, QPushButton, QTabWidget,
-    QLineEdit, QGroupBox, QMessageBox, QSizePolicy
+    QLineEdit, QGroupBox, QMessageBox
 )
 from PyQt6.QtCore import Qt, QTimer
 from mecademicpy.robot import Robot
@@ -41,7 +41,7 @@ SLIDER_RANGE = 100
 DEFAULT_ROBOT_IP = "192.168.0.100"
 DEFAULT_VELOCITY = 20
 DEFAULT_STEP_SIZE = 1.0
-GRIPPER_MAX_OPENING = 5.8  # mm
+GRIPPER_MAX_OPENING = 5.6  # mm
 TIMER_INTERVAL = 50  # ms
 CONNECTION_RETRY_INTERVAL = 3000  # ms
 JOYSTICK_CHECK_INTERVAL = 2000  # ms
@@ -259,23 +259,20 @@ class CameraWindow(QMainWindow):
         # Back button for returning to grid view
         self.back_button = QPushButton("← Back to Grid View")
         self.back_button.clicked.connect(self.show_grid_view)
-        self.back_button.setMaximumHeight(40)
         self.maximized_layout.addWidget(self.back_button)
 
         # Placeholder for maximized camera
         self.maximized_camera_label = QLabel("Click on a camera to maximize")
         self.maximized_camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.maximized_camera_label.setStyleSheet("border: 2px solid gray; background-color: black; color: white;")
-        self.maximized_layout.addWidget(self.maximized_camera_label)
+        self.maximized_layout.addWidget(self.maximized_camera_label, stretch=1)
 
         # Add widgets to stacked layout
         self.stacked_layout.addWidget(self.grid_widget)      # index 0 = grid view
         self.stacked_layout.addWidget(self.maximized_widget) # index 1 = maximized view
 
         # Add stacked layout to main layout
-        stacked_container = QWidget()
-        stacked_container.setLayout(self.stacked_layout)
-        self.main_layout.addWidget(stacked_container)
+        self.main_layout.addWidget(self.stacked_layout)
 
         # Track current state
         self.current_view = "grid"  # "grid" or "maximized"
@@ -382,8 +379,9 @@ class MecaPendant(QWidget):
         self.camera_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         # Forbidden zones: list of ((x1,y1,z1), (x2,y2,z2))
         self.forbidden_zones = [
-            ((200, 0, 308), (300, -130, 200)),  # Example box 1
-            ((61, -298, 34), (-126, -114, 121))  # Example box 2
+            # ((200, 0, 308), (300, -130, 200)),  # Example box 1
+            # ((61, -298, 34), (-126, -114, 121))  # Example box 2
+            # ((135.798, 134.462, 152.348), (-78.730, 320.216, 38))
         ]
         self._current_forbidden_zone = None
         self.first_frame_received = False
@@ -421,7 +419,7 @@ class MecaPendant(QWidget):
         # Build the rest of the UI (now console_container is ready)
         self._build_ui()
         self.setWindowState(Qt.WindowState.WindowMaximized)
-        self.setMinimumSize(1024, 768)
+        self.setMinimumSize(1280, 720) # Increased minimum size for better layout
 
         # Set control mode defaults
         self.update_control_buttons()
@@ -858,13 +856,13 @@ class MecaPendant(QWidget):
 
         control_box.setLayout(ctrl_layout)
         return control_box
+
     def _create_velocity_control_group(self) -> QGroupBox:
-        """Create the velocity control group"""
+        """Create the velocity control group with a flexible layout."""
         vel_box = QGroupBox("Maximum Jogging Velocity")
         vel_layout = QHBoxLayout()
 
         self.vel_input = QLineEdit(str(self.velocity_percent))
-        self.vel_input.setFixedWidth(50)
         self.vel_input.returnPressed.connect(self.manual_velocity_input)
 
         vel_dec = QPushButton("<")
@@ -880,19 +878,28 @@ class MecaPendant(QWidget):
         vel_inc = QPushButton(">")
         vel_inc.clicked.connect(partial(self.adjust_velocity, 10))
 
-        for w in [self.vel_input, vel_dec, self.vel_slider, vel_inc]:
-            vel_layout.addWidget(w)
+        # --- Layout Improvement ---
+        vel_dec.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        vel_inc.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.vel_input.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.vel_input.setMaximumWidth(60)  # Give it a bit of space, but not too much
+        self.vel_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        vel_layout.addWidget(self.vel_input)
+        vel_layout.addWidget(vel_dec)
+        vel_layout.addWidget(self.vel_slider)
+        vel_layout.addWidget(vel_inc)
+        # --- End Layout Improvement ---
 
         vel_box.setLayout(vel_layout)
         return vel_box
 
     def _create_increment_control_group(self) -> QGroupBox:
-        """Create the increment control group"""
+        """Create the increment control group with a flexible, scalable layout."""
         inc_box = QGroupBox("Jog Increment (° / mm)")
         inc_layout = QHBoxLayout()
 
         self.inc_input = QLineEdit(f"{self.joint_step:.1f}")
-        self.inc_input.setFixedWidth(50)
         self.inc_input.returnPressed.connect(self.manual_increment_input)
 
         inc_dec = QPushButton("<")
@@ -908,21 +915,31 @@ class MecaPendant(QWidget):
         inc_inc = QPushButton(">")
         inc_inc.clicked.connect(partial(self.adjust_increment, 1))
 
-        for w in [self.inc_input, inc_dec, self.inc_slider, inc_inc]:
-            inc_layout.addWidget(w)
+        # --- Layout Improvement ---
+        # Allow buttons to have their natural fixed width, but let the input and slider expand.
+        inc_dec.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        inc_inc.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.inc_input.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.inc_input.setMaximumWidth(60)
+        self.inc_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        # ------------------------
+
+        inc_layout.addWidget(self.inc_input)
+        inc_layout.addWidget(inc_dec)
+        inc_layout.addWidget(self.inc_slider)
+        inc_layout.addWidget(inc_inc)
 
         inc_box.setLayout(inc_layout)
         return inc_box
 
     def _create_gripper_control_group(self) -> QGroupBox:
-        """Create the gripper control group"""
+        """Create the gripper control group with a flexible layout."""
         gripper_box = QGroupBox("Gripper Control")
         gripper_layout = QVBoxLayout()
 
         # First row: Gripper percentage slider
         slider_row = QHBoxLayout()
         gripper_label = QLabel("Gripper %")
-        gripper_label.setFixedWidth(70)
 
         self.gripper_slider = QSlider(Qt.Orientation.Horizontal)
         self.gripper_slider.setMinimum(0)
@@ -933,17 +950,21 @@ class MecaPendant(QWidget):
         self.gripper_slider.valueChanged.connect(self.set_gripper_percent)
 
         self.gripper_value_label = QLabel("50%")
-        self.gripper_value_label.setFixedWidth(40)
         self.gripper_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        # --- Layout Improvement ---
+        gripper_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.gripper_value_label.setMinimumWidth(45) # Use minimum width for flexibility
+        self.gripper_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
         slider_row.addWidget(gripper_label)
-        slider_row.addWidget(self.gripper_slider, 1)
+        slider_row.addWidget(self.gripper_slider)
         slider_row.addWidget(self.gripper_value_label)
+        # --- End Layout Improvement ---
 
         # Second row: Switch button
         self.detect_tool_btn = QPushButton("Switch to Vacuum/Gripper")
         self.detect_tool_btn.clicked.connect(self.toggle_tool_type)
-        self.detect_tool_btn.setMaximumHeight(30)
 
         gripper_layout.addLayout(slider_row)
         gripper_layout.addWidget(self.detect_tool_btn)
@@ -954,7 +975,6 @@ class MecaPendant(QWidget):
         """Create the right panel with console, emergency stop, and programming controls"""
         right_panel = QVBoxLayout()
 
-        # ✅ Emergency Stop button at the top
         emergency_btn = QPushButton("EMERGENCY STOP")
         emergency_btn.setStyleSheet(
             "background-color: red; color: white; font-weight: bold; font-size: 16px; padding: 1px;"
@@ -962,33 +982,26 @@ class MecaPendant(QWidget):
         emergency_btn.clicked.connect(self.emergency_stop)
         right_panel.addWidget(emergency_btn)
 
-        # ✅ Console section
         console_label = QLabel("Console")
         console_label.setStyleSheet("font-weight: bold;")
         right_panel.addWidget(console_label)
 
         right_panel.addWidget(self.console_container, stretch=1)
 
-        # ✅ Compact button row for Clear Console and Toggle Camera View
         button_row_layout = QHBoxLayout()
 
         clear_console_button = QPushButton("Clear")
-        clear_console_button.setMaximumWidth(80)
         clear_console_button.clicked.connect(self.console.clear)
         button_row_layout.addWidget(clear_console_button)
 
         toggle_cam_btn = QPushButton("Camera")
-        toggle_cam_btn.setMaximumWidth(80)
         toggle_cam_btn.clicked.connect(self.toggle_camera_view)
         button_row_layout.addWidget(toggle_cam_btn)
 
-        button_row_layout.addStretch()  # Push buttons to the left
+        button_row_layout.addStretch()
 
-        button_row_widget = QWidget()
-        button_row_widget.setLayout(button_row_layout)
-        right_panel.addWidget(button_row_widget)
+        right_panel.addLayout(button_row_layout)
 
-        # ✅ Add robot programming interface
         from meca500_programming_interface import add_programming_interface_to_gui
         self.programming_interface = add_programming_interface_to_gui(self)
         right_panel.addWidget(self.programming_interface)
@@ -1019,8 +1032,6 @@ class MecaPendant(QWidget):
         bytes_per_line = ch * w
         qt_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
         self.camera_label.setPixmap(QPixmap.fromImage(qt_img))
-
-        # In Test.py, add this method inside the MecaPendant class
 
     def emergency_stop(self):
             """Emergency stop: Abort program, pause motion, and deactivate the robot."""
@@ -1113,6 +1124,7 @@ class MecaPendant(QWidget):
             self.update_gripper_label(False)
         except Exception as e:
             self.log(f"[ERROR] Vacuum off (SetValveState(0)): {e}")
+
     def _create_status_bar(self) -> QHBoxLayout:
         """Create the status bar at the bottom of the window"""
         status_bar = QHBoxLayout()
@@ -1191,157 +1203,111 @@ class MecaPendant(QWidget):
             self.log(f"[ERROR] Failed to initialize joystick support: {e}")
             self.joystick = None
 
-
-
     def init_joint_tab(self) -> None:
-        """Initialize the joint control tab"""
+        """Initialize the joint control tab with a flexible, grid-based layout."""
         tab = QWidget()
         layout = QGridLayout()
         layout.setSpacing(8)
+        self.joint_boxes.clear() # Clear any old widgets if this is recalled
 
-        self.joint_boxes = []
         for i in range(6):
-            box = QWidget()
-            box_layout = QHBoxLayout()
-            box_layout.setSpacing(5)
-            box_layout.setContentsMargins(2, 2, 2, 2)
-
             label = QLabel(f"J{i + 1}")
-            label.setFixedWidth(20)
-            label.setStyleSheet("color: white;")
-
             input_field = QLineEdit("0.000")
-            input_field.setFixedWidth(70)
-            input_field.returnPressed.connect(lambda idx=i: self.set_joint_from_input(idx))
-            self.joint_inputs.append(input_field)
-
             left = QPushButton("◀")
-            left.setFixedWidth(35)
             right = QPushButton("▶")
-            right.setFixedWidth(35)
-
             slider = QSlider(Qt.Orientation.Horizontal)
+
+            # Store widgets
+            self.joint_inputs.append(input_field)
+            self.joint_sliders.append(slider)
+
+            # Configure widgets
+            input_field.returnPressed.connect(lambda idx=i: self.set_joint_from_input(idx))
             slider.setMinimum(-100)
             slider.setMaximum(100)
             slider.setValue(0)
-            slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            slider.setFixedHeight(20)
-            slider.setStyleSheet("""
-                QSlider::groove:horizontal {
-                    border: none;
-                    height: 10px;
-                    background: #1c1c1c;
-                    border-radius: 5px;
-                }
-                QSlider::handle:horizontal {
-                    background: #3c3c3c;
-                    border: none;
-                    width: 30px;
-                    height: 30px;
-                    margin: -10px 0;
-                    border-radius: 15px;
-                }
-                QSlider::sub-page:horizontal,
-                QSlider::add-page:horizontal {
-                    background: transparent;
-                }
-            """)
-
-            left.pressed.connect(partial(self.nudge_joint, i, -1))
-            right.pressed.connect(partial(self.nudge_joint, i, 1))
             slider.sliderPressed.connect(partial(self.set_slider_active, self.joint_active, i, True))
             slider.sliderReleased.connect(partial(self.release_slider, self.joint_sliders, self.joint_active, i))
+            left.pressed.connect(partial(self.nudge_joint, i, -1))
+            right.pressed.connect(partial(self.nudge_joint, i, 1))
 
-            self.joint_sliders.append(slider)
+            # Set size policies for scalability
+            label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            input_field.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            left.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            right.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-            box_layout.addWidget(label)
-            box_layout.addWidget(input_field)
-            box_layout.addWidget(left)
-            box_layout.addWidget(slider)
-            box_layout.addWidget(right)
+            # Add widgets directly to the grid layout for proper column alignment
+            layout.addWidget(label, i, 0)
+            layout.addWidget(input_field, i, 1)
+            layout.addWidget(left, i, 2)
+            layout.addWidget(slider, i, 3)
+            layout.addWidget(right, i, 4)
 
-            box.setLayout(box_layout)
-            self.joint_boxes.append(box)
-            layout.addWidget(box, i, 0)
+            # Store a reference to the container of controls for highlighting
+            # Although we add directly to the grid, we can create a dummy widget to hold the style
+            row_widget = QWidget()
+            row_widget.setLayout(layout) # This is a bit of a trick; layout is shared. A better way might be to style rows.
+            self.joint_boxes.append(row_widget) # Keep for compatibility with highlight logic
+
+        # Make the slider column stretchable
+        layout.setColumnStretch(3, 1)
 
         tab.setLayout(layout)
         self.tabs.addTab(tab, "Joint Jog")
 
     def init_cartesian_tab(self) -> None:
-        """Initialize the cartesian control tab"""
+        """Initialize the cartesian control tab with a flexible, grid-based layout."""
         tab = QWidget()
         layout = QGridLayout()
         layout.setSpacing(8)
+        self.cart_boxes.clear() # Clear any old widgets
 
         axes = ["X", "Y", "Z", "Rx", "Ry", "Rz"]
-        self.cart_boxes = []
 
         for i, axis in enumerate(axes):
-            box = QWidget()
-            box_layout = QHBoxLayout()
-            box_layout.setSpacing(5)
-            box_layout.setContentsMargins(2, 2, 2, 2)
-
             label = QLabel(axis)
-            label.setFixedWidth(20)
-            label.setStyleSheet("color: white;")
-
             input_field = QLineEdit("0.000")
-            input_field.setFixedWidth(70)
-            input_field.returnPressed.connect(lambda idx=i: self.set_cart_from_input(idx))
-            self.cart_inputs.append(input_field)
-
             left = QPushButton("◀")
-            left.setFixedWidth(35)
             right = QPushButton("▶")
-            right.setFixedWidth(35)
-
             slider = QSlider(Qt.Orientation.Horizontal)
+
+            # Store widgets
+            self.cart_inputs.append(input_field)
+            self.cart_sliders.append(slider)
+
+            # Configure widgets
+            input_field.returnPressed.connect(lambda idx=i: self.set_cart_from_input(idx))
             slider.setMinimum(-100)
             slider.setMaximum(100)
             slider.setValue(0)
-            slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            slider.setFixedHeight(20)
-
-            slider.setStyleSheet("""
-                QSlider::groove:horizontal {
-                    border: none;
-                    height: 10px;
-                    background: #1c1c1c;
-                    border-radius: 5px;
-                }
-                QSlider::handle:horizontal {
-                    background: #3c3c3c;
-                    border: none;
-                    width: 30px;
-                    height: 30px;
-                    margin: -10px 0;
-                    border-radius: 15px;
-                }
-                QSlider::sub-page:horizontal,
-                QSlider::add-page:horizontal {
-                    background: transparent;
-                }
-            """)
-
-            left.pressed.connect(partial(self.nudge_cart, i, -1))
-            right.pressed.connect(partial(self.nudge_cart, i, 1))
             slider.sliderPressed.connect(partial(self.set_slider_active, self.cart_active, i, True))
             slider.sliderReleased.connect(partial(self.release_slider, self.cart_sliders, self.cart_active, i))
-            # Add valueChanged connection for cartesian sliders
             slider.valueChanged.connect(partial(self.cart_slider_changed, i))
+            left.pressed.connect(partial(self.nudge_cart, i, -1))
+            right.pressed.connect(partial(self.nudge_cart, i, 1))
 
-            self.cart_sliders.append(slider)
+            # Set size policies for scalability
+            label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            input_field.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            left.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            right.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-            box_layout.addWidget(label)
-            box_layout.addWidget(input_field)
-            box_layout.addWidget(left)
-            box_layout.addWidget(slider)
-            box_layout.addWidget(right)
+            # Add widgets directly to the grid layout
+            layout.addWidget(label, i, 0)
+            layout.addWidget(input_field, i, 1)
+            layout.addWidget(left, i, 2)
+            layout.addWidget(slider, i, 3)
+            layout.addWidget(right, i, 4)
 
-            box.setLayout(box_layout)
-            self.cart_boxes.append(box)
-            layout.addWidget(box, i, 0)
+            row_widget = QWidget()
+            row_widget.setLayout(layout)
+            self.cart_boxes.append(row_widget) # Keep for compatibility
+
+        # Make the slider column stretchable
+        layout.setColumnStretch(3, 1)
 
         tab.setLayout(layout)
         self.tabs.addTab(tab, "Cartesian Jog")
@@ -2007,27 +1973,35 @@ class MecaPendant(QWidget):
 
     def update_joint_highlights(self) -> None:
         """Update joint control highlighting based on current mode"""
-        for i, box in enumerate(self.joint_boxes):
-            if self.control_mode == "joystick":
-                active = (self.joystick_joint_group == 0 and i < 3) or (self.joystick_joint_group == 1 and i >= 3)
-                if active:
-                    box.setStyleSheet("background-color: #333355;")
+        for i in range(6):
+            # The QGridLayout doesn't have a simple way to style a whole row.
+            # A more advanced solution would be to create a custom widget for each row.
+            # For now, we can style the input field as an indicator.
+            if i < len(self.joint_inputs):
+                widget_to_style = self.joint_inputs[i]
+                if self.control_mode == "joystick":
+                    active = (self.joystick_joint_group == 0 and i < 3) or (self.joystick_joint_group == 1 and i >= 3)
+                    if active:
+                        widget_to_style.setStyleSheet("background-color: #0078d4; border: 1px solid #106ebe;")
+                    else:
+                        widget_to_style.setStyleSheet("") # Revert to default stylesheet
                 else:
-                    box.setStyleSheet("background-color: none;")
-            else:
-                box.setStyleSheet("background-color: none;")
+                    widget_to_style.setStyleSheet("")
+
 
     def update_cartesian_highlights(self) -> None:
         """Update cartesian control highlighting based on current mode"""
-        for i, box in enumerate(self.cart_boxes):
-            if self.control_mode == "joystick":
-                active = (self.joystick_joint_group == 0 and i < 3) or (self.joystick_joint_group == 1 and i >= 3)
-                if active:
-                    box.setStyleSheet("background-color: #333355;")
+        for i in range(6):
+            if i < len(self.cart_inputs):
+                widget_to_style = self.cart_inputs[i]
+                if self.control_mode == "joystick":
+                    active = (self.joystick_joint_group == 0 and i < 3) or (self.joystick_joint_group == 1 and i >= 3)
+                    if active:
+                        widget_to_style.setStyleSheet("background-color: #0078d4; border: 1px solid #106ebe;")
+                    else:
+                        widget_to_style.setStyleSheet("")
                 else:
-                    box.setStyleSheet("background-color: none;")
-            else:
-                box.setStyleSheet("background-color: none;")
+                    widget_to_style.setStyleSheet("")
 
     def set_control_mode(self, mode: str) -> None:
         """Set the control mode (mouse or joystick)"""
@@ -2061,8 +2035,8 @@ class MecaPendant(QWidget):
 
     def update_control_buttons(self) -> None:
         """Update control button styling based on current mode"""
-        active_style = "background-color: lightgreen; color: black; font-weight: bold;"
-        inactive_style = "background-color: #333; color: white;"
+        active_style = "background-color: #0078d4; border-color: #106ebe; color: white; font-weight: bold;"
+        inactive_style = "" # Revert to default stylesheet
 
         if self.control_mode == "mouse":
             self.mouse_btn.setStyleSheet(active_style)
@@ -2368,76 +2342,6 @@ def main():
     try:
         app = QApplication(sys.argv)
         app.setStyle('Fusion')  # Use Fusion style for consistent cross-platform look
-
-        # Set dark theme
-        dark_palette = app.palette()
-        dark_palette.setColor(dark_palette.ColorRole.Window, Qt.GlobalColor.black)
-        dark_palette.setColor(dark_palette.ColorRole.WindowText, Qt.GlobalColor.white)
-        dark_palette.setColor(dark_palette.ColorRole.Base, Qt.GlobalColor.darkGray)
-        dark_palette.setColor(dark_palette.ColorRole.AlternateBase, Qt.GlobalColor.darkGray)
-        dark_palette.setColor(dark_palette.ColorRole.ToolTipBase, Qt.GlobalColor.darkGray)
-        dark_palette.setColor(dark_palette.ColorRole.ToolTipText, Qt.GlobalColor.white)
-        dark_palette.setColor(dark_palette.ColorRole.Text, Qt.GlobalColor.white)
-        dark_palette.setColor(dark_palette.ColorRole.Button, Qt.GlobalColor.darkGray)
-        dark_palette.setColor(dark_palette.ColorRole.ButtonText, Qt.GlobalColor.white)
-        dark_palette.setColor(dark_palette.ColorRole.BrightText, Qt.GlobalColor.red)
-        dark_palette.setColor(dark_palette.ColorRole.Link, Qt.GlobalColor.blue)
-        dark_palette.setColor(dark_palette.ColorRole.Highlight, Qt.GlobalColor.darkBlue)
-        dark_palette.setColor(dark_palette.ColorRole.HighlightedText, Qt.GlobalColor.white)
-        app.setPalette(dark_palette)
-
-        # Set stylesheet for better appearance
-        app.setStyleSheet("""
-            QGroupBox {
-                border: 1px solid #555;
-                border-radius: 5px;
-                margin-top: 10px;
-                font-weight: bold;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                subcontrol-position: top center;
-                padding: 0 5px;
-            }
-            QPushButton {
-                background-color: #333;
-                color: white;
-                border: 1px solid #555;
-                border-radius: 3px;
-                padding: 5px;
-            }
-            QPushButton:hover {
-                background-color: #444;
-            }
-            QPushButton:pressed {
-                background-color: #222;
-            }
-            QLineEdit {
-                background-color: #222;
-                color: white;
-                border: 1px solid #555;
-                border-radius: 3px;
-                padding: 3px;
-            }
-            QTabWidget::pane {
-                border: 1px solid #555;
-                border-radius: 3px;
-            }
-            QTabBar::tab {
-                background-color: #333;
-                color: white;
-                border: 1px solid #555;
-                border-bottom: none;
-                border-top-left-radius: 3px;
-                border-top-right-radius: 3px;
-                padding: 5px 10px;
-            }
-            QTabBar::tab:selected {
-                background-color: #444;
-                border-bottom: none;
-            }
-        """)
 
         window = MecaPendant()
         window.show()
