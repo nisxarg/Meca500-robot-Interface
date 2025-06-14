@@ -1471,26 +1471,16 @@ class ProgrammingInterface(QWidget):
         self._last_error_message = message
         self.log_to_console(f"ERROR: {message}")
 
-        # Store current size
-        current_size = self.window().size()
-
         # Update error display
         self.error_label.setText(message)
         self.error_label.setVisible(True)
-        self.reset_error_btn.setVisible(False)
-
-        # Force the window to maintain its size
-        self.window().setFixedSize(current_size)
+        self.reset_error_btn.setVisible(True)  # It's often better to show the reset button
 
         if self.running:
             self.stop_program()
 
-        # Start error timer
+        # Use a timer to hide the error message automatically
         self.error_timer.start(5000)
-
-        # Reset size constraints after error display
-        QTimer.singleShot(5100, lambda: self.window().setFixedSize(16777215, 16777215))
-
     def reset_error(self):
         """Reset the error state"""
         # Disable the reset button immediately to prevent double-clicks
@@ -1499,6 +1489,7 @@ class ProgrammingInterface(QWidget):
         # Update UI state
         self.error_label.setVisible(False)
         self.reset_error_btn.setVisible(False)
+
 
         # Show status message
         self.status_label.setText("Resetting robot error...")
