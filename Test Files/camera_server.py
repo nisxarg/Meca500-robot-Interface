@@ -5,11 +5,12 @@ import numpy as np
 import math
 
 # Configuration for camera detection and streaming
-MAX_CAMERAS_TO_CHECK = 4  # We are aiming for a 2x2 grid, so check up to 4 potential camera indices (0, 1, 2, 3)
+MAX_CAMERAS_TO_CHECK = 4  # We are aiming for a 2x2 grid, so check up to 4 potential camera indices (e.g., 1, 2, 3, 4)
 
 # Configuration for testing a single camera
 ENABLE_SINGLE_CAMERA_TESTING = False  # Set to True to test only one specific camera
-TEST_SINGLE_CAMERA_ID = 0  # Change this to 0, 1, 2, 3 to test different cameras
+# IMPORTANT: When ENABLE_SINGLE_CAMERA_TESTING is True, TEST_SINGLE_CAMERA_ID should be 1, 2, 3, etc.
+TEST_SINGLE_CAMERA_ID = 1  # Change this to 1, 2, 3, etc., to test different cameras
 
 # Desired resolution for individual camera streams (HD)
 CAMERA_WIDTH = 1280
@@ -70,14 +71,15 @@ def capture_and_buffer(camera_id: int, backend_api: int = cv2.CAP_ANY):
     global running
     cap = None
 
-    print(f"Attempting to open camera {camera_id} with backend {backend_api}...")
+    # Display 1-based index, but use camera_id directly for VideoCapture as it's the internal index
+    print(f"Attempting to open camera {camera_id} (internal index) with backend {backend_api}...")
     try:
         cap = cv2.VideoCapture(camera_id, backend_api)
         if not cap.isOpened():
             print(f"Failed to open camera {camera_id}. It might be in use or not accessible.")
             with buffer_lock:
                 latest_frames_buffer[camera_id] = create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
-                                                                           f"Camera {camera_id + 1}\nX Failed to Open",
+                                                                           f"Camera {camera_id}\nX Failed to Open",
                                                                            border_color=(0, 0, 200))
             return
 
@@ -99,19 +101,19 @@ def capture_and_buffer(camera_id: int, backend_api: int = cv2.CAP_ANY):
                 cap = None
                 with buffer_lock:
                     latest_frames_buffer[camera_id] = create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
-                                                                               f"Camera {camera_id + 1}\nNo Frames",
+                                                                               f"Camera {camera_id}\nNo Frames",
                                                                                border_color=(0, 0, 200))
                 return
 
         with buffer_lock:
             latest_frames_buffer[camera_id] = create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
-                                                                       f"Camera {camera_id + 1}\nLoading...")  # Initial placeholder
+                                                                       f"Camera {camera_id}\nLoading...")  # Initial placeholder
 
         while running and cap and cap.isOpened():
             ret, frame = cap.read()
             if ret:
                 # Add "Camera X" label directly on the frame for consistency with image
-                frame = create_text_overlay(frame, f"Camera {camera_id + 1}")
+                frame = create_text_overlay(frame, f"Camera {camera_id}")
                 with buffer_lock:
                     latest_frames_buffer[camera_id] = frame
             else:
@@ -120,7 +122,7 @@ def capture_and_buffer(camera_id: int, backend_api: int = cv2.CAP_ANY):
                     print(f"Camera {camera_id} lost, attempting to re-open...")
                     with buffer_lock:
                         latest_frames_buffer[camera_id] = create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
-                                                                                   f"Camera {camera_id + 1}\nReconnecting...",
+                                                                                   f"Camera {camera_id}\nReconnecting...",
                                                                                    border_color=(0, 100,
                                                                                                  200))  # Blue border for reconnect
                     time.sleep(2)  # Wait before retrying
@@ -130,7 +132,7 @@ def capture_and_buffer(camera_id: int, backend_api: int = cv2.CAP_ANY):
                         print(f"Failed to re-open camera {camera_id}.")
                         with buffer_lock:
                             latest_frames_buffer[camera_id] = create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
-                                                                                       f"Camera {camera_id + 1}\nX Failed Reconnect",
+                                                                                       f"Camera {camera_id}\nX Failed Reconnect",
                                                                                        border_color=(0, 0, 200))
                         break  # Exit loop if re-open fails
                     else:
@@ -138,16 +140,15 @@ def capture_and_buffer(camera_id: int, backend_api: int = cv2.CAP_ANY):
                         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
                         print(f"Camera {camera_id} re-opened successfully.")
                         continue  # Skip to next loop iteration to get a valid frame
-                else:
-                    # Camera is open but no frame, small delay to prevent busy-waiting
-                    time.sleep(0.01)  # 10ms
-            time.sleep(0.005)  # Small sleep to yield CPU and prevent busy-waiting
+                # No `else` for `time.sleep(0.01)` here. `cap.read()` will block until a frame is available or timeout.
+                # If no frame, it's a real issue or temporary blip, and the re-connection logic handles it.
+            # Removed `time.sleep(0.005)` here to minimize capture thread latency.
 
     except Exception as e:
         print(f"An error occurred with camera {camera_id}: {e}")
         with buffer_lock:
             latest_frames_buffer[camera_id] = create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
-                                                                       f"Camera {camera_id + 1}\nERROR: {e}",
+                                                                       f"Camera {camera_id}\nERROR: {e}",
                                                                        border_color=(0, 0, 200))
     finally:
         if cap:
@@ -155,7 +156,7 @@ def capture_and_buffer(camera_id: int, backend_api: int = cv2.CAP_ANY):
         with buffer_lock:
             if camera_id in latest_frames_buffer:
                 latest_frames_buffer[camera_id] = create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
-                                                                           f"Camera {camera_id + 1}\nDisconnected",
+                                                                           f"Camera {camera_id}\nDisconnected",
                                                                            border_color=(0, 0, 200))
         print(f"Camera {camera_id} capture thread terminated.")
 
@@ -175,48 +176,39 @@ def on_mouse_click(event, x, y, flags, param):
             col = x // SUB_FRAME_DISPLAY_WIDTH
             row = y // SUB_FRAME_DISPLAY_HEIGHT
 
-            clicked_index_in_grid = row * 2 + col  # For a 2x2 grid
+            clicked_index_in_grid = row * 2 + col  # For a 2x2 grid (0-3)
 
-            # Map grid index to potential_camera_indices (0-3)
-            if 0 <= clicked_index_in_grid < MAX_CAMERAS_TO_CHECK:
-                clicked_camera_id = clicked_index_in_grid  # Assuming our cameras are 0,1,2,3 for quadrants
-                if clicked_camera_id in latest_frames_buffer:  # Ensure it's a camera we attempted to open
-                    # Check if the camera is actually streaming (not just a placeholder for failed/no camera)
-                    with buffer_lock:
-                        current_frame_data = latest_frames_buffer.get(clicked_camera_id)
-                        # Check if it's a default placeholder frame (meaning not actively streaming)
-                        # This is a heuristic and might need refinement
-                        if current_frame_data is not None and \
-                                not (np.array_equal(current_frame_data,
-                                                    create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
-                                                                             f"Camera {clicked_camera_id + 1}\nX Failed to Open")) or \
-                                     np.array_equal(current_frame_data,
-                                                    create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
-                                                                             f"Camera {clicked_camera_id + 1}\nNo Frames")) or \
-                                     np.array_equal(current_frame_data,
-                                                    create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
-                                                                             f"Camera {clicked_camera_id + 1}\nLoading...")) or \
-                                     np.array_equal(current_frame_data,
-                                                    create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
-                                                                             f"Camera {clicked_camera_id + 1}\nReconnecting...")) or \
-                                     np.array_equal(current_frame_data,
-                                                    create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
-                                                                             f"Camera {clicked_camera_id + 1}\nX Failed Reconnect")) or \
-                                     np.array_equal(current_frame_data,
-                                                    create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
-                                                                             f"Camera {clicked_camera_id + 1}\nERROR:")) or \
-                                     np.array_equal(current_frame_data,
-                                                    create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
-                                                                             f"Camera {clicked_camera_id + 1}\nDisconnected"))):
+            # Map grid index to potential_camera_indices (0-3) which correspond to camera_ids (1,2,3,4)
+            # We now use clicked_index_in_grid + 1 to get the 1-based display camera ID
+            clicked_camera_display_id = clicked_index_in_grid + 1
 
-                            current_maximized_camera_id = clicked_camera_id
-                            in_maximized_view = True
-                            print(f"Maximizing camera {clicked_camera_id + 1}")
-                        else:
-                            print(
-                                f"Camera {clicked_camera_id + 1} is not streaming or failed to open. Cannot maximize.")
-                else:
-                    print(f"No active camera at this position ({clicked_index_in_grid}).")
+            # Use the actual camera_id (e.g., 1, 2, 3, 4) from the detection loop
+            # and check if it's in the buffer
+            if clicked_camera_display_id in latest_frames_buffer:
+                clicked_camera_id_for_buffer = clicked_camera_display_id  # Use 1-based index directly as key
+
+                # Check if the camera is actually streaming (not just a placeholder for failed/no camera)
+                with buffer_lock:
+                    current_frame_data = latest_frames_buffer.get(clicked_camera_id_for_buffer)
+                    # Simplified check: if the frame is not one of our known empty/error placeholders, assume it's streaming.
+                    if current_frame_data is not None and \
+                            "Loading..." not in current_frame_data.tobytes().decode(errors='ignore') and \
+                            "Failed to Open" not in current_frame_data.tobytes().decode(errors='ignore') and \
+                            "No Frames" not in current_frame_data.tobytes().decode(errors='ignore') and \
+                            "Reconnecting..." not in current_frame_data.tobytes().decode(errors='ignore') and \
+                            "Failed Reconnect" not in current_frame_data.tobytes().decode(errors='ignore') and \
+                            "Disconnected" not in current_frame_data.tobytes().decode(errors='ignore') and \
+                            "ERROR:" not in current_frame_data.tobytes().decode(errors='ignore') and \
+                            "No Camera Here" not in current_frame_data.tobytes().decode(errors='ignore'):
+
+                        current_maximized_camera_id = clicked_camera_id_for_buffer
+                        in_maximized_view = True
+                        print(f"Maximizing camera {clicked_camera_id_for_buffer}")
+                    else:
+                        print(
+                            f"Camera {clicked_camera_id_for_buffer} is not streaming or failed to open. Cannot maximize.")
+            else:
+                print(f"No active camera at this position (Camera {clicked_camera_display_id}).")
 
 
 def main():
@@ -225,16 +217,18 @@ def main():
     """
     global running, in_maximized_view, current_maximized_camera_id
 
-    # We will specifically try to get cameras 0, 1, 2, 3 for the 2x2 grid
-    potential_camera_indices = list(range(MAX_CAMERAS_TO_CHECK))  # [0, 1, 2, 3]
+    # We will specifically try to get cameras starting from index 1 for the 2x2 grid
+    # This means indices 1, 2, 3, 4 will be attempted for VideoCapture.
+    potential_camera_indices = list(range(1, MAX_CAMERAS_TO_CHECK + 1))
 
-    detected_camera_ids = []
+    detected_camera_ids = []  # Stores the actual 1-based camera IDs that were detected
 
     # Using CAP_ANY for backend for basic OpenCV viewer
     selected_backend_api = cv2.CAP_ANY
 
     # --- Camera Detection ---
     if ENABLE_SINGLE_CAMERA_TESTING:
+        # TEST_SINGLE_CAMERA_ID is expected to be 1-based here (e.g., 1, 2, 3, 4)
         print(f"Single camera testing mode: Checking Camera {TEST_SINGLE_CAMERA_ID}")
         temp_cap = cv2.VideoCapture(TEST_SINGLE_CAMERA_ID, selected_backend_api)
         if temp_cap.isOpened():
@@ -249,13 +243,13 @@ def main():
             print(f"Camera {TEST_SINGLE_CAMERA_ID} could not be opened.")
         time.sleep(0.3)  # Short delay
     else:
-        print("Auto-detecting specified camera indices for 2x2 grid (0-3)...")
-        for i in potential_camera_indices:
+        print("Auto-detecting specified camera indices for 2x2 grid (starting from 1)...")
+        for i in potential_camera_indices:  # i will be 1, 2, 3, 4
             temp_cap = cv2.VideoCapture(i, selected_backend_api)
             if temp_cap.isOpened():
                 ret, _ = temp_cap.read()  # Try to read a frame to validate
                 if ret:
-                    detected_camera_ids.append(i)
+                    detected_camera_ids.append(i)  # Store the 1-based index
                     print(f"Found and validated Camera {i}")
                 else:
                     print(f"Camera {i} opened but could not read a frame.")
@@ -278,20 +272,21 @@ def main():
     # Initialize placeholders for all 4 quadrants, mapping them to camera IDs or "empty" status
     # This ensures a consistent 2x2 grid even if fewer than 4 cameras are found.
 
-    # Map camera_ids to their display order (0 -> top-left, 1 -> top-right, etc.)
+    # display_quadrants maps the 0-indexed grid position (0,1,2,3) to the 1-based camera ID
     display_quadrants = {}
-    for i in range(MAX_CAMERAS_TO_CHECK):
-        if i in detected_camera_ids:
-            display_quadrants[i] = i  # Use actual camera ID if detected
+    for i in range(MAX_CAMERAS_TO_CHECK):  # i is 0, 1, 2, 3 (grid position)
+        camera_id_to_check = i + 1  # Convert grid position to desired 1-based camera ID
+        if camera_id_to_check in detected_camera_ids:
+            display_quadrants[i] = camera_id_to_check  # Map grid position to 1-based camera ID
         else:
             display_quadrants[i] = None  # Placeholder if not detected
 
     # Start a thread for each detected camera to capture frames
-    for cam_id in detected_camera_ids:
+    for cam_id in detected_camera_ids:  # cam_id here is 1-based
         thread = threading.Thread(target=capture_and_buffer, args=(cam_id, selected_backend_api))
         thread.daemon = True  # Allow main program to exit even if threads are running
-        thread.start()
         camera_threads.append(thread)
+        thread.start()
         time.sleep(0.5)  # Small delay between starting each camera thread
 
     # Give threads a moment to start capturing
@@ -313,11 +308,11 @@ def main():
                     max_frame_to_display = max_frame
                 else:
                     # If maximized camera's buffer is empty/failed, return to grid
-                    print(f"Maximized camera {current_maximized_camera_id + 1} frame not available. Returning to grid.")
+                    print(f"Maximized camera {current_maximized_camera_id} frame not available. Returning to grid.")
                     in_maximized_view = False
                     current_maximized_camera_id = None
                     max_frame_to_display = create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
-                                                                    f"Camera {current_maximized_camera_id + 1}\nError/No Data",
+                                                                    f"Camera {current_maximized_camera_id}\nError/No Data",
                                                                     border_color=(0, 0, 200))
 
             if max_frame_to_display is not None:
@@ -326,13 +321,13 @@ def main():
         else:
             # Display composite grid view
             quadrant_frames = []
-            for i in range(MAX_CAMERAS_TO_CHECK):  # Iterate through the 4 quadrants
-                cam_id_for_quadrant = display_quadrants[i]
+            for i in range(MAX_CAMERAS_TO_CHECK):  # Iterate through the 4 quadrants (0, 1, 2, 3)
+                cam_id_for_quadrant = display_quadrants[i]  # This is now the 1-based camera ID or None
 
                 frame_to_display = None
                 if cam_id_for_quadrant is not None:
                     with buffer_lock:
-                        frame = latest_frames_buffer.get(cam_id_for_quadrant)
+                        frame = latest_frames_buffer.get(cam_id_for_quadrant)  # Fetch using 1-based ID
                         if frame is not None:
                             # Frame is already at CAMERA_WIDTH/HEIGHT, no resizing needed here if matching SUB_FRAME_DISPLAY_WIDTH/HEIGHT
                             frame_to_display = frame
@@ -340,9 +335,10 @@ def main():
                             # Fallback for detected but not yet streaming or errored
                             frame_to_display = create_placeholder_frame(SUB_FRAME_DISPLAY_WIDTH,
                                                                         SUB_FRAME_DISPLAY_HEIGHT,
-                                                                        f"Camera {cam_id_for_quadrant + 1}\nLoading...")
+                                                                        f"Camera {cam_id_for_quadrant}\nLoading...")
                 else:
                     # No camera assigned to this quadrant
+                    # Labels are 1-based for the quadrants
                     if i == 0:  # Top-Left
                         label = "Camera 1"
                     elif i == 1:  # Top-Right
@@ -352,8 +348,9 @@ def main():
                     elif i == 3:  # Bottom-Right
                         label = "Camera 4"
 
-                    # Check if camera was detected but failed to open permanently or is disconnected
-                    if i in detected_camera_ids and cam_id_for_quadrant is None:
+                    # Check if original potential camera index (i+1) was detected but failed permanently
+                    if (i + 1) in detected_camera_ids and cam_id_for_quadrant is None:
+                        # This means it was found during detection but failed to initialize in its thread
                         frame_to_display = create_placeholder_frame(SUB_FRAME_DISPLAY_WIDTH, SUB_FRAME_DISPLAY_HEIGHT,
                                                                     f"{label}\nX Failed to open",
                                                                     border_color=(0, 0, 200))
