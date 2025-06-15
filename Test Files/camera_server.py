@@ -1,635 +1,394 @@
-import sys
 import cv2
-from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QGridLayout, QMessageBox, QSizePolicy, QPushButton, QComboBox,
-    QSpacerItem
-)
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QMetaObject, Q_ARG, QSize
-from PyQt6.QtGui import QImage, QPixmap, QFont
 import time
+import threading
+import numpy as np
+import math
 
 # Configuration for camera detection and streaming
-MAX_CAMERAS_TO_CHECK = 10  # Check up to 10 potential camera indices (0 to 9)
-MAX_CONCURRENT_CAMERAS = 2  # Max number of camera streams to try and display simultaneously initially
+MAX_CAMERAS_TO_CHECK = 4  # We are aiming for a 2x2 grid, so check up to 4 potential camera indices (0, 1, 2, 3)
 
-# Define common OpenCV backend preferences for Windows
-# You might need to adjust these based on your OS and camera types
-OPENCV_BACKENDS = {
-    "Default": cv2.CAP_ANY,  # Auto-detect (usually the default)
-    "DirectShow": cv2.CAP_DSHOW,  # Good for older webcams on Windows
-    "Media Foundation": cv2.CAP_MSMF,  # Newer backend for Windows
-    "V4L2 (Linux)": cv2.CAP_V4L2,  # For Linux systems
-    "AVFoundation (macOS)": cv2.CAP_AVFOUNDATION  # For macOS
-}
-DEFAULT_BACKEND_KEY = "Default"
+# Configuration for testing a single camera
+ENABLE_SINGLE_CAMERA_TESTING = False  # Set to True to test only one specific camera
+TEST_SINGLE_CAMERA_ID = 0  # Change this to 0, 1, 2, 3 to test different cameras
+
+# Desired resolution for individual camera streams (HD)
+CAMERA_WIDTH = 1280
+CAMERA_HEIGHT = 720
+
+# Desired size for each sub-frame in the composite window
+# To achieve "max" quality, this now matches the CAMERA_WIDTH/HEIGHT
+SUB_FRAME_DISPLAY_WIDTH = CAMERA_WIDTH
+SUB_FRAME_DISPLAY_HEIGHT = CAMERA_HEIGHT
+
+# Dictionary to hold the latest frame from each active camera
+# Protected by a lock for thread-safe access
+latest_frames_buffer = {}
+buffer_lock = threading.Lock()
+
+# List to hold camera worker threads
+camera_threads = []
+running = True  # Global flag to control threads and main loop
+
+# Global state for UI view mode and maximized camera
+current_maximized_camera_id = None  # Stores the 0-indexed ID of the maximized camera
+in_maximized_view = False
+composite_window_name = "Multi-Camera Feed"  # Name of the single OpenCV window
 
 
-class CameraWorker(QThread):
+def create_text_overlay(frame, text, color=(255, 255, 255)):
+    """Adds text to a frame, centered, with a small border for visibility."""
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 1.0
+    font_thickness = 2
+
+    text_size = cv2.getTextSize(text, font, font_scale, font_thickness)[0]
+    text_x = (frame.shape[1] - text_size[0]) // 2
+    text_y = (frame.shape[0] + text_size[1]) // 2
+
+    # Add a black outline for better readability on varying backgrounds
+    cv2.putText(frame, text, (text_x, text_y), font, font_scale, (0, 0, 0), font_thickness + 2, cv2.LINE_AA)
+    cv2.putText(frame, text, (text_x, text_y), font, font_scale, color, font_thickness, cv2.LINE_AA)
+    return frame
+
+
+def create_placeholder_frame(width: int, height: int, text: str, border_color=(50, 50, 50)):
+    """Creates a black frame with white text and a border for placeholder display."""
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+
+    # Add a border
+    border_thickness = 5
+    frame = cv2.rectangle(frame, (0, 0), (width - 1, height - 1), border_color, border_thickness)
+
+    return create_text_overlay(frame, text, (200, 200, 200))  # Lighter text for placeholders
+
+
+def capture_and_buffer(camera_id: int, backend_api: int = cv2.CAP_ANY):
     """
-    Worker thread to handle camera capture and emit frames.
-    This prevents the UI from freezing while capturing video.
+    Captures video frames from a specific camera and places them in a shared buffer.
+    Runs in its own thread. Does NOT display anything directly.
     """
-    frame_ready = pyqtSignal(QImage)
-    camera_error = pyqtSignal(int, str)  # Emits camera_id and error message
-    camera_opened = pyqtSignal(int)  # Emits camera_id when successfully opened
-    camera_stopped = pyqtSignal(int)  # Emits camera_id when stopped
+    global running
+    cap = None
 
-    def __init__(self, camera_id: int, backend_api: int, parent=None):
-        super().__init__(parent)
-        self.camera_id = camera_id
-        self.backend_api = backend_api
-        self.running = False
-        self.cap = None
-        self.width = 640  # Default width
-        self.height = 480  # Default height
-        self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 10  # Increased reconnect attempts
-        self.reconnect_delay_ms = 2000  # 2 seconds delay between reconnect attempts
+    print(f"Attempting to open camera {camera_id} with backend {backend_api}...")
+    try:
+        cap = cv2.VideoCapture(camera_id, backend_api)
+        if not cap.isOpened():
+            print(f"Failed to open camera {camera_id}. It might be in use or not accessible.")
+            with buffer_lock:
+                latest_frames_buffer[camera_id] = create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
+                                                                           f"Camera {camera_id + 1}\nX Failed to Open",
+                                                                           border_color=(0, 0, 200))
+            return
 
-    def _open_camera(self):
-        """Attempts to open the camera with the specified backend and set properties."""
-        if self.cap:
-            self.cap.release()  # Release any existing capture
-            self.cap = None
+        # Attempt to set resolution
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
 
-        try:
-            self.cap = cv2.VideoCapture(self.camera_id, self.backend_api)
-            if not self.cap.isOpened():
-                return False
+        actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        print(
+            f"Camera {camera_id} opened. Requested: {CAMERA_WIDTH}x{CAMERA_HEIGHT}, Actual: {actual_width}x{actual_height}")
 
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-
-            # Warm-up: try reading a frame to ensure it's actually streaming
-            ret, _ = self.cap.read()
+        # Warm-up: read a few frames to stabilize the stream
+        for _ in range(5):
+            ret, _ = cap.read()
             if not ret:
-                self.cap.release()
-                self.cap = None
-                return False
-            return True
-        except Exception as e:
-            print(f"Error during _open_camera for {self.camera_id}: {e}")
-            if self.cap:
-                self.cap.release()
-                self.cap = None
-            return False
-
-    def run(self):
-        """Main loop for the camera worker thread."""
-        self.running = True
-        try:
-            if not self._open_camera():
-                self.camera_error.emit(self.camera_id,
-                                       f"Initial open failed for camera {self.camera_id}. Check if in use or accessible.")
-                self.running = False
-                self.camera_stopped.emit(self.camera_id)
+                print(f"Camera {camera_id} failed to read warm-up frames. Releasing.")
+                cap.release()
+                cap = None
+                with buffer_lock:
+                    latest_frames_buffer[camera_id] = create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
+                                                                               f"Camera {camera_id + 1}\nNo Frames",
+                                                                               border_color=(0, 0, 200))
                 return
 
-            self.camera_opened.emit(self.camera_id)
-            self.reconnect_attempts = 0  # Reset reconnect attempts on successful open
+        with buffer_lock:
+            latest_frames_buffer[camera_id] = create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
+                                                                       f"Camera {camera_id + 1}\nLoading...")  # Initial placeholder
 
-            while self.running:
-                try:
-                    ret, frame = self.cap.read()
-                    if ret:
-                        self.reconnect_attempts = 0  # Reset on successful frame read
-                        rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        h, w, ch = rgb_image.shape
-                        bytes_per_line = ch * w
-                        qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-                        self.frame_ready.emit(qt_image)
+        while running and cap and cap.isOpened():
+            ret, frame = cap.read()
+            if ret:
+                # Add "Camera X" label directly on the frame for consistency with image
+                frame = create_text_overlay(frame, f"Camera {camera_id + 1}")
+                with buffer_lock:
+                    latest_frames_buffer[camera_id] = frame
+            else:
+                # Frame not read, check if camera is still open or needs reconnection
+                if not cap.isOpened():
+                    print(f"Camera {camera_id} lost, attempting to re-open...")
+                    with buffer_lock:
+                        latest_frames_buffer[camera_id] = create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
+                                                                                   f"Camera {camera_id + 1}\nReconnecting...",
+                                                                                   border_color=(0, 100,
+                                                                                                 200))  # Blue border for reconnect
+                    time.sleep(2)  # Wait before retrying
+                    cap.release()
+                    cap = cv2.VideoCapture(camera_id, backend_api)
+                    if not cap.isOpened():
+                        print(f"Failed to re-open camera {camera_id}.")
+                        with buffer_lock:
+                            latest_frames_buffer[camera_id] = create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
+                                                                                       f"Camera {camera_id + 1}\nX Failed Reconnect",
+                                                                                       border_color=(0, 0, 200))
+                        break  # Exit loop if re-open fails
                     else:
-                        # Frame not read, check if camera is still open or needs reconnection
-                        if not self.cap.isOpened():
-                            print(f"[CameraWorker {self.camera_id}] Camera lost, attempting to reconnect...")
-                            self.camera_error.emit(self.camera_id, "Camera disconnected, attempting to reconnect...")
-                            self.msleep(self.reconnect_delay_ms)
-                            if not self._open_camera():
-                                self.reconnect_attempts += 1
-                                if self.reconnect_attempts >= self.max_reconnect_attempts:
-                                    self.camera_error.emit(self.camera_id,
-                                                           f"Failed to reconnect camera {self.camera_id} after multiple attempts.")
-                                    self.running = False
-                                    break  # Exit loop if max attempts reached
-                        else:
-                            # Camera is open but no frame, small delay to prevent busy-waiting
-                            self.msleep(10)
-                except cv2.error as e:
-                    # Specific OpenCV errors (e.g., if camera suddenly becomes unavailable)
-                    print(f"[CameraWorker {self.camera_id}] OpenCV error during read: {e}")
-                    self.camera_error.emit(self.camera_id, f"Streaming error: {e}, attempting reconnection...")
-                    self.msleep(self.reconnect_delay_ms)
-                    if not self._open_camera():
-                        self.reconnect_attempts += 1
-                        if self.reconnect_attempts >= self.max_reconnect_attempts:
-                            self.camera_error.emit(self.camera_id,
-                                                   f"Failed to reconnect camera {self.camera_id} after streaming error.")
-                            self.running = False
-                            break
-                except Exception as e:
-                    # General unexpected errors
-                    self.camera_error.emit(self.camera_id, f"An unexpected error occurred: {e}")
-                    self.running = False
-                    break  # Exit loop on unhandled exception
-
-        except Exception as e:
-            self.camera_error.emit(self.camera_id, f"An unhandled error occurred during camera worker startup: {e}")
-        finally:
-            if self.cap:
-                self.cap.release()
-            self.running = False
-            self.camera_stopped.emit(self.camera_id)  # Signal that this worker has fully stopped
-
-    def stop(self):
-        """Stop the camera worker thread."""
-        self.running = False
-        self.wait()  # Wait for the thread to finish gracefully
-
-
-class CameraFeedWidget(QWidget):  # Changed from QLabel to QWidget to allow more complex layout
-    """
-    Widget to display a single camera feed with controls.
-    It manages its own CameraWorker thread.
-    """
-
-    def __init__(self, camera_id: int, backend_api: int, parent=None):
-        super().__init__(parent)
-        self.camera_id = camera_id
-        self.backend_api = backend_api
-        self.worker = None
-        self.is_streaming = False
-        self.init_ui()
-
-    def init_ui(self):
-        """Initialize the UI for the camera feed widget."""
-        main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(5, 5, 5, 5)  # Smaller margins
-        self.setLayout(main_layout)
-
-        # Camera ID Label
-        self.id_label = QLabel(f"Camera {self.camera_id}")
-        self.id_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.id_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        self.id_label.setStyleSheet("color: #ADD8E6;")  # Light blue for ID
-        main_layout.addWidget(self.id_label)
-
-        # Video feed QLabel
-        self.video_label = QLabel("Initializing...")
-        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.video_label.setScaledContents(False)
-        self.video_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.video_label.setMinimumSize(320, 240)  # Standard 4:3 aspect ratio minimum
-        self.video_label.setStyleSheet("""
-            QLabel {
-                border: 2px solid #555;
-                border-radius: 8px;
-                background-color: #1e1e1e;
-                color: #ccc;
-                font-size: 16px;
-                font-weight: bold;
-                padding: 15px;
-            }
-        """)
-        self.video_label.setFont(QFont("Arial", 14))
-        main_layout.addWidget(self.video_label)
-
-        # Control buttons
-        control_layout = QHBoxLayout()
-        control_layout.setContentsMargins(0, 5, 0, 0)  # Top margin for separation
-
-        self.toggle_button = QPushButton("Start Stream")
-        self.toggle_button.clicked.connect(self.toggle_stream)
-        self.toggle_button.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50; /* Green for Start */
-                color: white;
-                padding: 5px 10px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-            QPushButton:pressed {
-                background-color: #367c39;
-            }
-        """)
-        control_layout.addWidget(self.toggle_button)
-
-        main_layout.addLayout(control_layout)
-
-        # Initial state setup
-        self.update_ui_for_stopped_stream()
-
-    def start_feed(self):
-        """Start the camera capture thread."""
-        if self.is_streaming:
-            return
-
-        self.video_label.setText(f"Camera {self.camera_id}\n(Starting stream...)")
-        self.video_label.setStyleSheet("""
-            QLabel {
-                border: 2px solid #555;
-                border-radius: 8px;
-                background-color: #1e1e1e;
-                color: #ccc;
-                font-size: 16px;
-                font-weight: bold;
-                padding: 15px;
-            }
-        """)
-
-        if self.worker:
-            self.worker.stop()
-            self.worker.deleteLater()  # Clean up old worker
-
-        self.worker = CameraWorker(self.camera_id, self.backend_api)
-        self.worker.frame_ready.connect(self.update_frame)
-        self.worker.camera_error.connect(self.handle_error)
-        self.worker.camera_opened.connect(self.on_camera_opened)
-        self.worker.camera_stopped.connect(self.on_camera_stopped)
-        self.worker.start()
-        self.is_streaming = True
-        self.update_ui_for_running_stream()
-
-    def stop_feed(self):
-        """Stop the camera feed and its worker thread."""
-        if not self.is_streaming:
-            return
-
-        if self.worker:
-            self.worker.stop()
-            self.worker = None
-        self.is_streaming = False
-        self.update_ui_for_stopped_stream()
-        print(f"Camera {self.camera_id} stream stopped.")
-
-    def toggle_stream(self):
-        """Toggle between starting and stopping the camera stream."""
-        if self.is_streaming:
-            self.stop_feed()
-        else:
-            self.start_feed()
-
-    def update_frame(self, q_image: QImage):
-        """Update the QLabel with the new frame."""
-        # Scale the image to fit the label size while maintaining aspect ratio
-        scaled_pixmap = QPixmap.fromImage(q_image).scaled(
-            self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
-        )
-        self.video_label.setPixmap(scaled_pixmap)
-
-    def handle_error(self, camera_id: int, message: str):
-        """Display camera error message."""
-        self.video_label.setText(f"Camera {camera_id}\n❌ Error: {message}")
-        self.video_label.setStyleSheet("""
-            QLabel {
-                border: 2px solid #ff4444;
-                border-radius: 8px;
-                background-color: #331111;
-                color: #ffaaaa;
-                font-size: 14px;
-                font-weight: bold;
-                padding: 15px;
-            }
-        """)
-        # Forward the error to the parent app for centralized logging/status update
-        if isinstance(self.parent(), CameraViewerApp):
-            self.parent().log_error(f"[Camera {camera_id} ERROR]: {message}")
-        self.is_streaming = False  # Mark as not streaming due to error
-        self.update_ui_for_stopped_stream()
-
-    def on_camera_opened(self, camera_id: int):
-        """Called when a camera is successfully opened."""
-        print(f"Camera {camera_id} opened successfully and streaming.")
-        self.video_label.setText("")  # Clear initial text once frame starts coming
-        self.video_label.setStyleSheet("""
-            QLabel {
-                border: 2px solid #228b22; /* Forest green border for active camera */
-                border-radius: 8px;
-                background-color: #1e1e1e;
-                color: #ccc;
-                font-size: 16px;
-                font-weight: bold;
-                padding: 15px;
-            }
-        """)
-        self.is_streaming = True
-        self.update_ui_for_running_stream()
-        # Inform the parent app that a camera is now active
-        if isinstance(self.parent(), CameraViewerApp):
-            self.parent().camera_active_status_changed(camera_id, True)
-
-    def on_camera_stopped(self, camera_id: int):
-        """Called when a camera worker thread stops."""
-        print(f"Camera {camera_id} worker thread stopped.")
-        self.is_streaming = False
-        self.update_ui_for_stopped_stream()
-        if isinstance(self.parent(), CameraViewerApp):
-            self.parent().camera_active_status_changed(camera_id, False)
-
-    def update_ui_for_running_stream(self):
-        """Updates the UI to reflect a running stream."""
-        self.toggle_button.setText("Stop Stream")
-        self.toggle_button.setStyleSheet("""
-            QPushButton {
-                background-color: #CC0000; /* Red for Stop */
-                color: white;
-                padding: 5px 10px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #B20000;
-            }
-            QPushButton:pressed {
-                background-color: #990000;
-            }
-        """)
-        # Show active status on the border of the widget container
-        self.setStyleSheet("""
-            QWidget {
-                border: 2px solid #228b22; /* Green border for active widget */
-                border-radius: 10px;
-                background-color: #2c2c2c;
-            }
-        """)
-
-    def update_ui_for_stopped_stream(self):
-        """Updates the UI to reflect a stopped stream."""
-        self.toggle_button.setText("Start Stream")
-        self.toggle_button.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50; /* Green for Start */
-                color: white;
-                padding: 5px 10px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-            QPushButton:pressed {
-                background-color: #367c39;
-            }
-        """)
-        self.video_label.setPixmap(QPixmap())  # Clear any residual image
-        self.video_label.setText(f"Camera {self.camera_id}\n(Stream stopped)")
-        self.video_label.setStyleSheet("""
-            QLabel {
-                border: 2px solid #555;
-                border-radius: 8px;
-                background-color: #1e1e1e;
-                color: #ccc;
-                font-size: 16px;
-                font-weight: bold;
-                padding: 15px;
-            }
-        """)
-        self.setStyleSheet("""
-            QWidget {
-                border: 2px solid #555; /* Gray border for inactive widget */
-                border-radius: 10px;
-                background-color: #2c2c2c;
-            }
-        """)
-
-
-class CameraViewerApp(QWidget):
-    """Main application window for displaying multiple camera feeds."""
-
-    def __init__(self):
-        super().__init__()
-        self.camera_feeds = {}  # Use dict to store CameraFeedWidget instances by camera_id
-        self.active_cameras_count = 0
-        self.init_ui()
-        self.find_and_start_cameras()
-
-    def init_ui(self):
-        """Initialize the main application UI."""
-        self.setWindowTitle("Multi-Camera Viewer")
-        self.setGeometry(100, 100, 1200, 800)  # Default window size
-        self.setMinimumSize(800, 600)
-        self.setStyleSheet("""
-            QWidget {
-                background-color: #2c2c2c; /* Dark background */
-                color: #f0f0f0;
-                font-family: 'Segoe UI', sans-serif;
-            }
-            QPushButton {
-                background-color: #4CAF50; /* Green */
-                color: white;
-                padding: 10px 15px;
-                border-radius: 5px;
-                border: none;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-            QPushButton:pressed {
-                background-color: #367c39;
-            }
-            QMessageBox {
-                background-color: #2c2c2c;
-                color: #f0f0f0;
-                font-size: 14px;
-            }
-            QMessageBox QPushButton {
-                background-color: #007acc;
-                color: white;
-                border-radius: 4px;
-                padding: 5px 10px;
-            }
-            QComboBox {
-                background-color: #404040;
-                color: #ffffff;
-                border: 1px solid #606060;
-                border-radius: 4px;
-                padding: 5px;
-            }
-            QComboBox::drop-down {
-                border: 0px;
-            }
-            QComboBox::down-arrow {
-                image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA0AAAALCAYAAABaGz3uAAAABmJLR0QA/wD/AP+AdzgyAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAAFiUAABYlAUlSJPAAAAB+SURBVCjPY2AYBfQxMDDQxcDAwMChpYGJkYfBQAaGhoYsDAx/sTAxMqgBEGZhYGCQZmBgYGQgA6gGkGagwUAmgGQYmBhqYGhgYGFgyMjAwgQjXjAwMBQyMDAwMNiBkYH/MTAwgJGBgaFBhoGBgaHBQAYgXGBiYGCigAAAF3tq3Jq+0fIAAAAASUVORK5CYII=); /* Example tiny base64 encoded down arrow */
-                width: 10px;
-                height: 10px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #404040;
-                color: #ffffff;
-                selection-background-color: #007acc;
-            }
-        """)
-
-        self.main_layout = QVBoxLayout()
-        self.setLayout(self.main_layout)
-
-        # Title Label
-        title_label = QLabel("Connected Cameras")
-        title_label.setFont(QFont("Segoe UI", 24, QFont.Weight.Bold))
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_label.setStyleSheet("color: #4CAF50; margin-bottom: 20px;")
-        self.main_layout.addWidget(title_label)
-
-        # Controls Layout (Refresh, Backend Selector)
-        top_controls_layout = QHBoxLayout()
-        top_controls_layout.setContentsMargins(0, 0, 0, 10)
-
-        self.refresh_button = QPushButton("Refresh Cameras")
-        self.refresh_button.clicked.connect(self.refresh_cameras)
-        top_controls_layout.addWidget(self.refresh_button)
-
-        top_controls_layout.addSpacerItem(
-            QSpacerItem(20, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))  # Spacer
-
-        backend_label = QLabel("OpenCV Backend:")
-        backend_label.setStyleSheet("font-weight: bold;")
-        top_controls_layout.addWidget(backend_label)
-
-        self.backend_combo = QComboBox()
-        self.backend_combo.addItems(OPENCV_BACKENDS.keys())
-        self.backend_combo.setCurrentText(DEFAULT_BACKEND_KEY)
-        self.backend_combo.currentIndexChanged.connect(self.on_backend_changed)
-        top_controls_layout.addWidget(self.backend_combo)
-
-        self.main_layout.addLayout(top_controls_layout)
-
-        # Grid layout for camera feeds
-        self.camera_grid_widget = QWidget()
-        self.camera_grid_layout = QGridLayout(self.camera_grid_widget)
-        self.camera_grid_layout.setSpacing(15)  # Spacing between camera feeds
-        self.main_layout.addWidget(self.camera_grid_widget, stretch=1)
-
-        # Status bar
-        self.status_label = QLabel("Detecting cameras...")
-        self.status_label.setStyleSheet("color: #aaaaaa; font-style: italic; margin-top: 10px;")
-        self.main_layout.addWidget(self.status_label)
-
-    def on_backend_changed(self, index: int):
-        """Handle selection of a new OpenCV backend."""
-        selected_backend_name = self.backend_combo.currentText()
-        print(f"OpenCV backend changed to: {selected_backend_name}")
-        self.refresh_cameras()  # Re-detect cameras with the new backend
-
-    def find_and_start_cameras(self):
-        """
-        Attempts to find all connected cameras and start their feeds.
-        Iterates through common camera indices as a heuristic.
-        Only starts MAX_CONCURRENT_CAMERAS feeds initially.
-        """
-        self.status_label.setText("Searching for cameras...")
-        self.active_cameras_count = 0
-        self.available_camera_ids = []  # Store IDs of cameras that opened successfully in detection phase
-
-        # Clear existing feeds
-        for camera_id, feed_widget in list(self.camera_feeds.items()):
-            feed_widget.stop_feed()
-            self.camera_grid_layout.removeWidget(feed_widget)
-            feed_widget.deleteLater()
-            del self.camera_feeds[camera_id]
-
-        selected_backend_api = OPENCV_BACKENDS[self.backend_combo.currentText()]
-
-        print(f"Starting camera detection with backend: {self.backend_combo.currentText()}")
-        for i in range(MAX_CAMERAS_TO_CHECK):
-            temp_cap = None
-            try:
-                # Try to open the camera with the selected backend
-                temp_cap = cv2.VideoCapture(i, selected_backend_api)
-                if temp_cap.isOpened():
-                    # Attempt to read a frame to confirm it's a working camera
-                    ret, test_frame = temp_cap.read()
-                    if ret:
-                        print(f"Found and validated camera at index: {i} (Backend: {self.backend_combo.currentText()})")
-                        self.available_camera_ids.append(i)
-                    else:
-                        print(
-                            f"Camera at index {i} opened but failed to read a frame (Backend: {self.backend_combo.currentText()}).")
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+                        print(f"Camera {camera_id} re-opened successfully.")
+                        continue  # Skip to next loop iteration to get a valid frame
                 else:
-                    print(f"Camera at index {i} could not be opened (Backend: {self.backend_combo.currentText()}).")
+                    # Camera is open but no frame, small delay to prevent busy-waiting
+                    time.sleep(0.01)  # 10ms
+            time.sleep(0.005)  # Small sleep to yield CPU and prevent busy-waiting
 
-            except Exception as e:
-                print(f"Error checking camera {i}: {e}")
-            finally:
-                if temp_cap:
-                    temp_cap.release()
+    except Exception as e:
+        print(f"An error occurred with camera {camera_id}: {e}")
+        with buffer_lock:
+            latest_frames_buffer[camera_id] = create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
+                                                                       f"Camera {camera_id + 1}\nERROR: {e}",
+                                                                       border_color=(0, 0, 200))
+    finally:
+        if cap:
+            cap.release()
+        with buffer_lock:
+            if camera_id in latest_frames_buffer:
+                latest_frames_buffer[camera_id] = create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
+                                                                           f"Camera {camera_id + 1}\nDisconnected",
+                                                                           border_color=(0, 0, 200))
+        print(f"Camera {camera_id} capture thread terminated.")
 
-            # Short delay between camera checks to prevent resource contention during detection
-            QThread.msleep(100)  # Sleep for 100 milliseconds
 
-        if len(self.available_camera_ids) == 0:
-            self.status_label.setText(
-                "No cameras detected. Please ensure cameras are connected and drivers are installed.")
-            QMessageBox.warning(self, "No Cameras Found",
-                                "No cameras were detected on your system.\n"
-                                "Please check if cameras are properly connected and drivers are installed, "
-                                "or try a different OpenCV backend.")
+# Mouse callback function for the main OpenCV window
+def on_mouse_click(event, x, y, flags, param):
+    global current_maximized_camera_id, in_maximized_view, running
+
+    if event == cv2.EVENT_LBUTTONDOWN:
+        if in_maximized_view:
+            # If already maximized, click anywhere to return to grid view
+            in_maximized_view = False
+            current_maximized_camera_id = None
+            print("Returning to grid view.")
         else:
-            self.status_label.setText(
-                f"Detected {len(self.available_camera_ids)} camera(s). Starting streams for up to {MAX_CONCURRENT_CAMERAS}...")
-            # Start feeds for a limited number of cameras
-            for idx, camera_id in enumerate(self.available_camera_ids):
-                camera_feed_widget = CameraFeedWidget(camera_id, selected_backend_api, self)
-                self.camera_feeds[camera_id] = camera_feed_widget
+            # In grid view, calculate which quadrant was clicked
+            col = x // SUB_FRAME_DISPLAY_WIDTH
+            row = y // SUB_FRAME_DISPLAY_HEIGHT
 
-                # Add to grid layout (dynamic arrangement)
-                row = idx // 2  # 2 cameras per row
-                col = idx % 2
-                self.camera_grid_layout.addWidget(camera_feed_widget, row, col)
+            clicked_index_in_grid = row * 2 + col  # For a 2x2 grid
 
-                # If we're within the concurrent limit, start the feed immediately
-                if idx < MAX_CONCURRENT_CAMERAS:
-                    camera_feed_widget.start_feed()
-                    # Add a small delay after starting each feed
-                    QThread.msleep(500)  # Sleep for 500 milliseconds
+            # Map grid index to potential_camera_indices (0-3)
+            if 0 <= clicked_index_in_grid < MAX_CAMERAS_TO_CHECK:
+                clicked_camera_id = clicked_index_in_grid  # Assuming our cameras are 0,1,2,3 for quadrants
+                if clicked_camera_id in latest_frames_buffer:  # Ensure it's a camera we attempted to open
+                    # Check if the camera is actually streaming (not just a placeholder for failed/no camera)
+                    with buffer_lock:
+                        current_frame_data = latest_frames_buffer.get(clicked_camera_id)
+                        # Check if it's a default placeholder frame (meaning not actively streaming)
+                        # This is a heuristic and might need refinement
+                        if current_frame_data is not None and \
+                                not (np.array_equal(current_frame_data,
+                                                    create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
+                                                                             f"Camera {clicked_camera_id + 1}\nX Failed to Open")) or \
+                                     np.array_equal(current_frame_data,
+                                                    create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
+                                                                             f"Camera {clicked_camera_id + 1}\nNo Frames")) or \
+                                     np.array_equal(current_frame_data,
+                                                    create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
+                                                                             f"Camera {clicked_camera_id + 1}\nLoading...")) or \
+                                     np.array_equal(current_frame_data,
+                                                    create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
+                                                                             f"Camera {clicked_camera_id + 1}\nReconnecting...")) or \
+                                     np.array_equal(current_frame_data,
+                                                    create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
+                                                                             f"Camera {clicked_camera_id + 1}\nX Failed Reconnect")) or \
+                                     np.array_equal(current_frame_data,
+                                                    create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
+                                                                             f"Camera {clicked_camera_id + 1}\nERROR:")) or \
+                                     np.array_equal(current_frame_data,
+                                                    create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
+                                                                             f"Camera {clicked_camera_id + 1}\nDisconnected"))):
 
-            self.update_status_label()
-
-    def refresh_cameras(self):
-        """Clears current camera feeds and restarts detection."""
-        print("Refreshing camera list...")
-        self.find_and_start_cameras()
-
-    def log_error(self, message: str):
-        """Logs errors to the console and potentially updates status bar."""
-        print(message)
-        self.status_label.setText(f"Error: {message}")
-
-    def camera_active_status_changed(self, camera_id: int, is_active: bool):
-        """Updates the count of active cameras and the status label."""
-        if is_active:
-            self.active_cameras_count += 1
-        else:
-            self.active_cameras_count = max(0, self.active_cameras_count - 1)  # Ensure not negative
-
-        self.update_status_label()
-
-    def update_status_label(self):
-        """Updates the main status label with current camera counts."""
-        total_detected = len(self.available_camera_ids)
-        if total_detected == 0:
-            self.status_label.setText("No cameras detected.")
-        elif self.active_cameras_count == 0 and total_detected > 0:
-            self.status_label.setText(f"Detected {total_detected} camera(s). No streams active.")
-        else:
-            self.status_label.setText(
-                f"Streaming from {self.active_cameras_count} of {total_detected} detected camera(s).")
-
-    def closeEvent(self, event):
-        """Ensure all camera threads are stopped when the application closes."""
-        for feed_widget in self.camera_feeds.values():
-            feed_widget.stop_feed()
-        super().closeEvent(event)
+                            current_maximized_camera_id = clicked_camera_id
+                            in_maximized_view = True
+                            print(f"Maximizing camera {clicked_camera_id + 1}")
+                        else:
+                            print(
+                                f"Camera {clicked_camera_id + 1} is not streaming or failed to open. Cannot maximize.")
+                else:
+                    print(f"No active camera at this position ({clicked_index_in_grid}).")
 
 
 def main():
-    """Main entry point for the camera viewer application."""
-    app = QApplication(sys.argv)
-    # Apply a dark fusion style for better aesthetics
-    app.setStyle('Fusion')
-    viewer = CameraViewerApp()
-    viewer.show()
-    sys.exit(app.exec())
+    """
+    Main function to detect cameras, start capture threads, and display a composite view.
+    """
+    global running, in_maximized_view, current_maximized_camera_id
+
+    # We will specifically try to get cameras 0, 1, 2, 3 for the 2x2 grid
+    potential_camera_indices = list(range(MAX_CAMERAS_TO_CHECK))  # [0, 1, 2, 3]
+
+    detected_camera_ids = []
+
+    # Using CAP_ANY for backend for basic OpenCV viewer
+    selected_backend_api = cv2.CAP_ANY
+
+    # --- Camera Detection ---
+    if ENABLE_SINGLE_CAMERA_TESTING:
+        print(f"Single camera testing mode: Checking Camera {TEST_SINGLE_CAMERA_ID}")
+        temp_cap = cv2.VideoCapture(TEST_SINGLE_CAMERA_ID, selected_backend_api)
+        if temp_cap.isOpened():
+            ret, _ = temp_cap.read()  # Try to read a frame to validate
+            if ret:
+                detected_camera_ids.append(TEST_SINGLE_CAMERA_ID)
+                print(f"Found and validated Camera {TEST_SINGLE_CAMERA_ID}")
+            else:
+                print(f"Camera {TEST_SINGLE_CAMERA_ID} opened but could not read a frame.")
+            temp_cap.release()
+        else:
+            print(f"Camera {TEST_SINGLE_CAMERA_ID} could not be opened.")
+        time.sleep(0.3)  # Short delay
+    else:
+        print("Auto-detecting specified camera indices for 2x2 grid (0-3)...")
+        for i in potential_camera_indices:
+            temp_cap = cv2.VideoCapture(i, selected_backend_api)
+            if temp_cap.isOpened():
+                ret, _ = temp_cap.read()  # Try to read a frame to validate
+                if ret:
+                    detected_camera_ids.append(i)
+                    print(f"Found and validated Camera {i}")
+                else:
+                    print(f"Camera {i} opened but could not read a frame.")
+                temp_cap.release()
+            else:
+                print(f"Camera {i} could not be opened.")
+            time.sleep(0.3)  # Increased delay for detection
+
+    if not detected_camera_ids and not ENABLE_SINGLE_CAMERA_TESTING:
+        print("No cameras detected. Please ensure cameras are connected and drivers are installed.")
+        input("Press Enter to exit...")  # Keep console open for user to read message
+        return
+    elif ENABLE_SINGLE_CAMERA_TESTING and not detected_camera_ids:
+        print(f"Camera {TEST_SINGLE_CAMERA_ID} not detected or failed to open in single test mode.")
+        input("Press Enter to exit...")
+        return
+
+    print(f"Starting capture threads for detected cameras: {detected_camera_ids}")
+
+    # Initialize placeholders for all 4 quadrants, mapping them to camera IDs or "empty" status
+    # This ensures a consistent 2x2 grid even if fewer than 4 cameras are found.
+
+    # Map camera_ids to their display order (0 -> top-left, 1 -> top-right, etc.)
+    display_quadrants = {}
+    for i in range(MAX_CAMERAS_TO_CHECK):
+        if i in detected_camera_ids:
+            display_quadrants[i] = i  # Use actual camera ID if detected
+        else:
+            display_quadrants[i] = None  # Placeholder if not detected
+
+    # Start a thread for each detected camera to capture frames
+    for cam_id in detected_camera_ids:
+        thread = threading.Thread(target=capture_and_buffer, args=(cam_id, selected_backend_api))
+        thread.daemon = True  # Allow main program to exit even if threads are running
+        thread.start()
+        camera_threads.append(thread)
+        time.sleep(0.5)  # Small delay between starting each camera thread
+
+    # Give threads a moment to start capturing
+    time.sleep(2)
+
+    # Create the single main display window
+    cv2.namedWindow(composite_window_name, cv2.WINDOW_NORMAL)
+    # Set the mouse callback for the main window
+    cv2.setMouseCallback(composite_window_name, on_mouse_click)
+
+    # Main loop to keep the program running and display composite view
+    while running:
+        if in_maximized_view and current_maximized_camera_id is not None:
+            # Display maximized single camera feed
+            max_frame_to_display = None
+            with buffer_lock:
+                max_frame = latest_frames_buffer.get(current_maximized_camera_id)
+                if max_frame is not None:
+                    max_frame_to_display = max_frame
+                else:
+                    # If maximized camera's buffer is empty/failed, return to grid
+                    print(f"Maximized camera {current_maximized_camera_id + 1} frame not available. Returning to grid.")
+                    in_maximized_view = False
+                    current_maximized_camera_id = None
+                    max_frame_to_display = create_placeholder_frame(CAMERA_WIDTH, CAMERA_HEIGHT,
+                                                                    f"Camera {current_maximized_camera_id + 1}\nError/No Data",
+                                                                    border_color=(0, 0, 200))
+
+            if max_frame_to_display is not None:
+                cv2.imshow(composite_window_name, max_frame_to_display)
+                cv2.resizeWindow(composite_window_name, CAMERA_WIDTH, CAMERA_HEIGHT)  # Resize window to single HD frame
+        else:
+            # Display composite grid view
+            quadrant_frames = []
+            for i in range(MAX_CAMERAS_TO_CHECK):  # Iterate through the 4 quadrants
+                cam_id_for_quadrant = display_quadrants[i]
+
+                frame_to_display = None
+                if cam_id_for_quadrant is not None:
+                    with buffer_lock:
+                        frame = latest_frames_buffer.get(cam_id_for_quadrant)
+                        if frame is not None:
+                            # Frame is already at CAMERA_WIDTH/HEIGHT, no resizing needed here if matching SUB_FRAME_DISPLAY_WIDTH/HEIGHT
+                            frame_to_display = frame
+                        else:
+                            # Fallback for detected but not yet streaming or errored
+                            frame_to_display = create_placeholder_frame(SUB_FRAME_DISPLAY_WIDTH,
+                                                                        SUB_FRAME_DISPLAY_HEIGHT,
+                                                                        f"Camera {cam_id_for_quadrant + 1}\nLoading...")
+                else:
+                    # No camera assigned to this quadrant
+                    if i == 0:  # Top-Left
+                        label = "Camera 1"
+                    elif i == 1:  # Top-Right
+                        label = "Camera 2"
+                    elif i == 2:  # Bottom-Left
+                        label = "Camera 3"
+                    elif i == 3:  # Bottom-Right
+                        label = "Camera 4"
+
+                    # Check if camera was detected but failed to open permanently or is disconnected
+                    if i in detected_camera_ids and cam_id_for_quadrant is None:
+                        frame_to_display = create_placeholder_frame(SUB_FRAME_DISPLAY_WIDTH, SUB_FRAME_DISPLAY_HEIGHT,
+                                                                    f"{label}\nX Failed to open",
+                                                                    border_color=(0, 0, 200))
+                    else:
+                        frame_to_display = create_placeholder_frame(SUB_FRAME_DISPLAY_WIDTH, SUB_FRAME_DISPLAY_HEIGHT,
+                                                                    f"{label}\nNo Camera Here")
+
+                quadrant_frames.append(frame_to_display)
+
+            # Arrange into a 2x2 grid
+            top_row = cv2.hconcat([quadrant_frames[0], quadrant_frames[1]])
+            bottom_row = cv2.hconcat([quadrant_frames[2], quadrant_frames[3]])
+            composite_image = cv2.vconcat([top_row, bottom_row])
+
+            # Display the composite image
+            cv2.imshow(composite_window_name, composite_image)
+            cv2.resizeWindow(composite_window_name, SUB_FRAME_DISPLAY_WIDTH * 2,
+                             SUB_FRAME_DISPLAY_HEIGHT * 2)  # Fixed 2x2 size
+
+        # Check for 'q' key press globally, and also if window was closed via X button
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q') or cv2.getWindowProperty(composite_window_name, cv2.WND_PROP_VISIBLE) < 1:
+            running = False
+
+        time.sleep(0.01)  # Small sleep to prevent busy-waiting
+
+    print("Exiting application. Signalling threads to stop...")
+    # Signal all threads to stop
+    running = False
+    for thread in camera_threads:
+        thread.join(timeout=5)  # Wait for threads to finish gracefully
+
+    print("Releasing cameras and closing windows...")
+    cv2.destroyAllWindows()
+    print("All cameras released and windows closed.")
 
 
 if __name__ == "__main__":
