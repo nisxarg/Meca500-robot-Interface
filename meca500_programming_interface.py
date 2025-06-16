@@ -502,7 +502,7 @@ class ProgrammingInterface(QWidget):
         self.record_pos_btn.clicked.connect(self.record_position)
         robot_control_layout.addWidget(self.record_pos_btn)
 
-        self.true_home_btn = QPushButton("True Home")
+        self.true_home_btn = QPushButton("Activation & Home ")
         self.true_home_btn.setStyleSheet("background-color: #4CAF50; color: white;")
         self.true_home_btn.setToolTip("Trigger the robot's true homing condition (Home command)")
         self.true_home_btn.clicked.connect(self.execute_true_home)
