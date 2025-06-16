@@ -1155,27 +1155,16 @@ class ProgrammingInterface(QWidget):
 
         try:
             self.robot.SendCustomCommand("GripperOpen")
-
-            # Wait for gripper operation to complete (add timeout)
-            max_attempts = 50  # 5 seconds timeout (50 * 0.1)
-            attempts = 0
-            while attempts < max_attempts:
-                status = self.robot.GetStatusRobot()
-                if hasattr(status, "gripper_opened") and status.gripper_opened:
-                    break
-                time.sleep(0.1)
-                attempts += 1
-
-            if attempts >= max_attempts:
-                raise Exception("Timeout waiting for gripper to open")
-
             self.gripper_state = "open"
             self.update_gripper_state_label()
-            self.log_to_console("Gripper opened successfully")
 
-            # Force update the UI
-            if hasattr(self.robot, "update_gripper_slider"):
-                self.robot.update_gripper_slider()
+            def delayed_update():
+                if hasattr(self.robot, "update_gripper_slider"):
+                    self.robot.update_gripper_slider()
+                self.log_to_console("Gripper opened successfully")
+
+            QTimer.singleShot(500, delayed_update)
+            self.log_to_console("Opening gripper...")
 
         except Exception as e:
             self.log_to_console(f"Gripper error: {e}")
