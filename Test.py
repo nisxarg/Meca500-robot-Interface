@@ -136,6 +136,16 @@ class CameraFeed(QLabel):
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.first_frame_received = False
+        self.frame_count = 0
+        self.last_fps_time = time.time()
+        self.fps = 0
+        self.frame_buffer = None
+        self.frame_lock = threading.Lock()
+        self.is_initializing = False
+        self.last_frame_time = 0
+        self.frame_interval = 1.0 / 30.0  # Target 30 FPS
+        self.skip_frames = 0
+        self.max_skip_frames = 2  # Maximum number of frames to skip if falling behind
 
         # Setup label properties
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -148,84 +158,161 @@ class CameraFeed(QLabel):
         # Enable mouse events
         self.setMouseTracking(True)
 
+    def mousePressEvent(self, event):
+        """Handle mouse click to maximize/restore camera"""
+        if event.button() == Qt.MouseButton.LeftButton and self.parent_window:
+            self.parent_window.toggle_camera_maximize(self.camera_id)
+        super().mousePressEvent(event)
+
     def start_camera(self, width=640, height=480):
         """Start camera capture in a separate thread"""
+        if self.is_initializing:
+            return
+
         def init_camera():
+            self.is_initializing = True
             print(f"[CameraFeed] Starting camera {self.camera_id} init...")
 
-            QMetaObject.invokeMethod(
-                self,
-                "setText",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, f"Camera {self.camera_id + 1}\nLoading...")
-            )
+            try:
+                # Try DirectShow first as it's usually faster on Windows
+                self.cap = cv2.VideoCapture(self.camera_id + 1, cv2.CAP_DSHOW)
+                
+                if not self.cap.isOpened():
+                    # Fallback to default backend
+                    self.cap = cv2.VideoCapture(self.camera_id + 1)
+                
+                if not self.cap.isOpened():
+                    raise Exception("Failed to open camera")
 
-            self.cap = cv2.VideoCapture(self.camera_id)
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-            
-            # Set camera properties for better quality
-            self.cap.set(cv2.CAP_PROP_BRIGHTNESS, 1.0)  # Increase brightness
-            self.cap.set(cv2.CAP_PROP_CONTRAST, 1.0)    # Increase contrast
-            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1) # Enable auto exposure
-            self.cap.set(cv2.CAP_PROP_FPS, 30)          # Set FPS
-
-            if not self.cap.isOpened():
-                print(f"[CameraFeed] Failed to open camera {self.camera_id}.")
+                # Set camera properties for better performance
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                self.cap.set(cv2.CAP_PROP_FPS, 30)
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize buffer size
+                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+                
+                # Optimize camera settings for better quality
+                self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+                self.cap.set(cv2.CAP_PROP_EXPOSURE, -4)
+                self.cap.set(cv2.CAP_PROP_GAIN, 10)
+                self.cap.set(cv2.CAP_PROP_BRIGHTNESS, 128)
+                self.cap.set(cv2.CAP_PROP_CONTRAST, 128)
+                self.cap.set(cv2.CAP_PROP_SATURATION, 128)
+                
+                # Start capture thread
+                self.capture_thread = threading.Thread(target=self._capture_frames, daemon=True)
+                self.capture_thread.start()
+                
+                # Start display timer with higher priority
+                QMetaObject.invokeMethod(
+                    self.timer,
+                    "start",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(int, 16)  # ~60 FPS for smoother updates
+                )
+                
+                print(f"[CameraFeed] Camera {self.camera_id} initialized successfully")
+                
+            except Exception as e:
+                print(f"[CameraFeed] Error initializing camera {self.camera_id}: {e}")
+                if self.cap:
+                    self.cap.release()
+                    self.cap = None
                 QMetaObject.invokeMethod(
                     self,
                     "setText",
                     Qt.ConnectionType.QueuedConnection,
                     Q_ARG(str, f"Camera {self.camera_id + 1}\n❌ Failed to open")
                 )
-                return
-
-            print(f"[CameraFeed] Camera {self.camera_id} opened successfully.")
-            self.first_frame_received = False
-
-            QMetaObject.invokeMethod(
-                self.timer,
-                "start",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(int, 30)
-            )
+            finally:
+                self.is_initializing = False
 
         threading.Thread(target=init_camera, daemon=True).start()
 
+    def _capture_frames(self):
+        """Background thread for continuous frame capture"""
+        consecutive_failures = 0
+        while self.cap and self.cap.isOpened():
+            try:
+                # Skip frames if we're falling behind
+                if self.skip_frames > 0:
+                    self.cap.grab()  # Just grab and discard the frame
+                    self.skip_frames -= 1
+                    continue
+
+                ret, frame = self.cap.read()
+                if ret:
+                    # Apply minimal processing for better performance
+                    frame = cv2.convertScaleAbs(frame, alpha=1.1, beta=5)  # Reduced processing
+                    
+                    with self.frame_lock:
+                        self.frame_buffer = frame
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    if consecutive_failures > 10:
+                        print(f"[CameraFeed] Camera {self.camera_id} failed to read frame {consecutive_failures} times")
+                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        time.sleep(0.1)
+                    else:
+                        time.sleep(0.01)
+            except Exception as e:
+                print(f"[CameraFeed] Error capturing frame from camera {self.camera_id}: {e}")
+                time.sleep(0.01)
+
     def update_frame(self):
-        """Update camera frame"""
-        if not self.cap:
+        """Update camera frame with FPS calculation and frame timing"""
+        if not self.cap or self.frame_buffer is None:
             return
 
-        ret, frame = self.cap.read()
-        if not ret:
+        current_time = time.time()
+        elapsed = current_time - self.last_frame_time
+
+        # Skip update if we're too close to the last frame
+        if elapsed < self.frame_interval:
             return
+
+        # Calculate FPS
+        self.frame_count += 1
+        if current_time - self.last_fps_time >= 1.0:
+            self.fps = self.frame_count
+            self.frame_count = 0
+            self.last_fps_time = current_time
+            
+            # Adjust frame skipping based on FPS
+            if self.fps < 25:  # If we're falling behind
+                self.skip_frames = min(self.max_skip_frames, self.skip_frames + 1)
+            else:
+                self.skip_frames = max(0, self.skip_frames - 1)
 
         if not self.first_frame_received:
             self.clear()
             self.first_frame_received = True
 
-        # Apply image processing for better quality
+        # Get frame from buffer
+        with self.frame_lock:
+            frame = self.frame_buffer.copy() if self.frame_buffer is not None else None
+
+        if frame is None:
+            return
+
+        # Convert frame to RGB
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Adjust brightness and contrast
-        alpha = 1.2  # Contrast control (1.0-3.0)
-        beta = 10    # Brightness control (0-100)
-        frame = cv2.convertScaleAbs(frame, alpha=alpha, beta=beta)
-        
+
+        # Add FPS text to frame
+        cv2.putText(frame, f"FPS: {self.fps}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+        # Convert to QImage and scale with better performance
         h, w, ch = frame.shape
         bytes_per_line = ch * w
         qt_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
         pixmap = QPixmap.fromImage(qt_img).scaled(
             self.size(), Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation)
+            Qt.TransformationMode.FastTransformation)
         self.setPixmap(pixmap)
-
-    def mousePressEvent(self, event):
-        """Handle mouse click to maximize/restore camera"""
-        if event.button() == Qt.MouseButton.LeftButton and self.parent_window:
-            self.parent_window.toggle_camera_maximize(self.camera_id)
-        super().mousePressEvent(event)
+        
+        self.last_frame_time = current_time
 
     def stop_camera(self):
         """Stop camera capture and release resources"""
@@ -233,22 +320,55 @@ class CameraFeed(QLabel):
         if self.cap:
             self.cap.release()
             self.cap = None
-
+        self.frame_buffer = None
 
 class CameraWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Multi-Camera Feed")
-        self.setMinimumSize(1000, 800)
+        self.setMinimumSize(800, 600)  # Reduced minimum size for better flexibility
         self.setWindowFlags(Qt.WindowType.Window)
 
-        # Add window state tracking
-        self.is_minimized = False
-        self.previous_geometry = None
+        # Add size controls
+        self.size_controls = QWidget()
+        size_layout = QHBoxLayout(self.size_controls)
+        
+        # Add size presets
+        size_presets = QComboBox()
+        size_presets.addItems(["Small (800x600)", "Medium (1280x720)", "Large (1920x1080)", "Custom"])
+        size_presets.currentTextChanged.connect(self.handle_size_preset)
+        size_layout.addWidget(QLabel("Size:"))
+        size_layout.addWidget(size_presets)
+        
+        # Add custom size inputs
+        self.width_input = QSpinBox()
+        self.width_input.setRange(400, 3840)
+        self.width_input.setValue(1280)
+        self.width_input.valueChanged.connect(self.update_custom_size)
+        
+        self.height_input = QSpinBox()
+        self.height_input.setRange(300, 2160)
+        self.height_input.setValue(720)
+        self.height_input.valueChanged.connect(self.update_custom_size)
+        
+        size_layout.addWidget(QLabel("Width:"))
+        size_layout.addWidget(self.width_input)
+        size_layout.addWidget(QLabel("Height:"))
+        size_layout.addWidget(self.height_input)
+        
+        # Add maximize/restore button
+        self.maximize_btn = QPushButton("Maximize")
+        self.maximize_btn.clicked.connect(self.toggle_maximize)
+        size_layout.addWidget(self.maximize_btn)
+        
+        size_layout.addStretch()
 
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.main_layout = QVBoxLayout(self.central_widget)
+        
+        # Add size controls at the top
+        self.main_layout.addWidget(self.size_controls)
 
         # Create stacked layout for grid and maximized views
         self.stacked_layout = QStackedLayout()
@@ -279,12 +399,6 @@ class CameraWindow(QMainWindow):
         self.back_button.setMaximumHeight(40)
         self.maximized_layout.addWidget(self.back_button)
 
-        # Add minimize/maximize button
-        self.minimize_button = QPushButton("Minimize")
-        self.minimize_button.clicked.connect(self.toggle_minimize)
-        self.minimize_button.setMaximumHeight(40)
-        self.maximized_layout.addWidget(self.minimize_button)
-
         # Placeholder for maximized camera
         self.maximized_camera_label = QLabel("Click on a camera to maximize")
         self.maximized_camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -303,25 +417,37 @@ class CameraWindow(QMainWindow):
         # Track current state
         self.current_view = "grid"  # "grid" or "maximized"
         self.maximized_camera_id = None
+        self.is_maximized = False
 
         # Timer for maximized view updates
         self.maximized_timer = QTimer()
         self.maximized_timer.timeout.connect(self.update_maximized_frame)
 
-    def toggle_minimize(self):
-        """Toggle between minimized and normal window state"""
-        if self.is_minimized:
-            # Restore previous geometry
-            if self.previous_geometry:
-                self.setGeometry(self.previous_geometry)
-            self.minimize_button.setText("Minimize")
-            self.is_minimized = False
+    def handle_size_preset(self, preset):
+        """Handle size preset selection"""
+        if preset == "Small (800x600)":
+            self.resize(800, 600)
+        elif preset == "Medium (1280x720)":
+            self.resize(1280, 720)
+        elif preset == "Large (1920x1080)":
+            self.resize(1920, 1080)
+        # Custom size is handled by the spinboxes
+
+    def update_custom_size(self):
+        """Update window size based on custom inputs"""
+        width = self.width_input.value()
+        height = self.height_input.value()
+        self.resize(width, height)
+
+    def toggle_maximize(self):
+        """Toggle between maximized and normal window state"""
+        if self.is_maximized:
+            self.showNormal()
+            self.maximize_btn.setText("Maximize")
         else:
-            # Save current geometry and minimize
-            self.previous_geometry = self.geometry()
-            self.setGeometry(self.x(), self.y(), 320, 240)  # Small size for minimized state
-            self.minimize_button.setText("Maximize")
-            self.is_minimized = True
+            self.showMaximized()
+            self.maximize_btn.setText("Restore")
+        self.is_maximized = not self.is_maximized
 
     def start_cameras(self, width=640, height=480):
         """Start all camera feeds"""
@@ -1079,47 +1205,33 @@ class MecaPendant(QWidget):
         self.camera_label.setPixmap(QPixmap.fromImage(qt_img))
 
     def emergency_stop(self):
-        """Emergency stop function - immediately stops all robot movement"""
-        try:
-            # First try to stop the robot's motion immediately
+            """Emergency stop: Abort program, pause motion, and deactivate the robot."""
             try:
+                # First, stop any running program sequence to prevent new commands.
+                if hasattr(self, 'programming_interface') and self.programming_interface.running:
+                    self.programming_interface.stop_program()
+                    self.log("▶️ Program execution aborted by Emergency Stop.")
+
+                # Halt the robot's physical motion.
                 self.robot.PauseMotion()
+                self.log("🛑 Motion Paused.")
+
+                # Deactivate the robot to cut power to motors.
                 self.robot.DeactivateRobot()
+                self.log("🚨 EMERGENCY STOP: Robot has been deactivated.")
+
+                # Display a critical warning to the user.
+                QMessageBox.critical(
+                    self,
+                    "Emergency Stop Activated",
+                    "Motion has been paused and the robot is now deactivated.\n"
+                    "The running program was aborted.\n\n"
+                    "To recover:\n"
+                    "1. Power-cycle the robot.\n"
+                    "2. Then re-activate via the GUI."
+                )
             except Exception as e:
-                self.log(f"[WARNING] Robot stop command failed: {e}")
-            
-            # Disable all controls and UI elements
-            self.disable_all_jogging()
-            
-            # Reset all sliders to zero
-            for slider in self.joint_sliders + self.cart_sliders:
-                slider.setValue(0)
-            
-            # Disable all control buttons and sliders
-            self.set_all_sliders_enabled(False)
-            
-            # Disable joystick
-            self.joystick_enabled = False
-            self.update_joystick_status_label()
-            
-            # Disable mouse controls
-            self.mouse_controls_enabled = False
-            self.update_mouse_controls_enabled()
-            
-            # Log the emergency stop
-            self.log("EMERGENCY STOP ACTIVATED")
-            
-            # Show error popup
-            self.show_error_popup("EMERGENCY STOP ACTIVATED\nRobot movement has been stopped.")
-            
-        except Exception as e:
-            self.log(f"[ERROR] Emergency stop failed: {e}")
-            # Try one last time to stop the robot
-            try:
-                self.robot.PauseMotion()
-                self.robot.DeactivateRobot()
-            except:
-                pass
+                self.log(f"[ERROR] An error occurred during emergency stop: {e}")
 
     def toggle_tool_type(self):
         """Toggle between vacuum and gripper mode manually."""
