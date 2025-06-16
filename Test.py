@@ -175,11 +175,11 @@ class CameraFeed(QLabel):
 
             try:
                 # Try DirectShow first as it's usually faster on Windows
-                self.cap = cv2.VideoCapture(self.camera_id + 1, cv2.CAP_DSHOW)
+                self.cap = cv2.VideoCapture(self.camera_id, cv2.CAP_DSHOW)
                 
                 if not self.cap.isOpened():
                     # Fallback to default backend
-                    self.cap = cv2.VideoCapture(self.camera_id + 1)
+                    self.cap = cv2.VideoCapture(self.camera_id)
                 
                 if not self.cap.isOpened():
                     raise Exception("Failed to open camera")
