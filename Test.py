@@ -131,118 +131,95 @@ class CameraFeed(QLabel):
     def __init__(self, camera_id, parent=None):
         super().__init__(parent)
         self.camera_id = camera_id
-        self.camera = None
-        self.capture_thread = None
-        self.is_running = False
-        self.frame_buffer = None
-        self.frame_lock = threading.Lock()
-        self.last_frame_time = 0
-        self.frame_interval = 1.0 / 30.0  # Target 30 FPS
-        self.setMinimumSize(320, 240)
+        self.parent_window = parent
+        self.cap = None
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_frame)
+        self.first_frame_received = False
+
+        # Setup label properties
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setText(f"Camera {camera_id}\nInitializing...")
-        self.setStyleSheet("background-color: black; color: white;")
+        self.setScaledContents(False)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumSize(200, 150)
+        self.setStyleSheet("border: 2px solid gray; background-color: black;")
+        self.setText(f"Camera {camera_id + 1}\nLoading...")
+
+        # Enable mouse events
+        self.setMouseTracking(True)
 
     def start_camera(self, width=640, height=480):
-        """Start the camera feed"""
-        if self.is_running:
-            return
-
+        """Start camera capture in a separate thread"""
         def init_camera():
-            try:
-                # Try DirectShow first (faster on Windows)
-                self.camera = cv2.VideoCapture(self.camera_id, cv2.CAP_DSHOW)
-                if not self.camera.isOpened():
-                    # Fallback to default backend
-                    self.camera = cv2.VideoCapture(self.camera_id)
-                
-                if not self.camera.isOpened():
-                    raise Exception("Failed to open camera")
+            print(f"[CameraFeed] Starting camera {self.camera_id} init...")
 
-                # Set camera properties for better performance
-                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-                self.camera.set(cv2.CAP_PROP_FPS, 30)
-                self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                self.camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
-                
-                # Set exposure and gain for better visibility
-                self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # Manual exposure
-                self.camera.set(cv2.CAP_PROP_EXPOSURE, -6)  # Adjust exposure
-                self.camera.set(cv2.CAP_PROP_GAIN, 100)  # Adjust gain
+            QMetaObject.invokeMethod(
+                self,
+                "setText",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, f"Camera {self.camera_id + 1}\nLoading...")
+            )
 
-                self.is_running = True
-                self.capture_thread = threading.Thread(target=self._capture_frames, daemon=True)
-                self.capture_thread.start()
-                
-                # Start frame update timer
-                self.update_timer = QTimer(self)
-                self.update_timer.timeout.connect(self.update_frame)
-                self.update_timer.start(16)  # ~60 FPS display
-                
-            except Exception as e:
-                print(f"Error initializing camera {self.camera_id}: {e}")
-                self.setText(f"Camera {self.camera_id}\nError: {str(e)}")
+            self.cap = cv2.VideoCapture(self.camera_id)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            
+            # Set camera properties for better quality
+            self.cap.set(cv2.CAP_PROP_BRIGHTNESS, 1.0)  # Increase brightness
+            self.cap.set(cv2.CAP_PROP_CONTRAST, 1.0)    # Increase contrast
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1) # Enable auto exposure
+            self.cap.set(cv2.CAP_PROP_FPS, 30)          # Set FPS
 
-        # Start initialization in a separate thread
-        init_thread = threading.Thread(target=init_camera, daemon=True)
-        init_thread.start()
+            if not self.cap.isOpened():
+                print(f"[CameraFeed] Failed to open camera {self.camera_id}.")
+                QMetaObject.invokeMethod(
+                    self,
+                    "setText",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, f"Camera {self.camera_id + 1}\n❌ Failed to open")
+                )
+                return
 
-    def _capture_frames(self):
-        """Background thread for capturing frames"""
-        while self.is_running:
-            try:
-                if self.camera and self.camera.isOpened():
-                    ret, frame = self.camera.read()
-                    if ret:
-                        with self.frame_lock:
-                            self.frame_buffer = frame
-                    else:
-                        print(f"Failed to capture frame from camera {self.camera_id}")
-                        time.sleep(0.1)  # Prevent busy waiting
-                else:
-                    print(f"Camera {self.camera_id} not opened")
-                    time.sleep(0.1)
-            except Exception as e:
-                print(f"Error capturing frame from camera {self.camera_id}: {e}")
-                time.sleep(0.1)
+            print(f"[CameraFeed] Camera {self.camera_id} opened successfully.")
+            self.first_frame_received = False
+
+            QMetaObject.invokeMethod(
+                self.timer,
+                "start",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(int, 30)
+            )
+
+        threading.Thread(target=init_camera, daemon=True).start()
 
     def update_frame(self):
-        """Update the displayed frame"""
-        if not self.is_running:
+        """Update camera frame"""
+        if not self.cap:
             return
 
-        try:
-            with self.frame_lock:
-                if self.frame_buffer is not None:
-                    # Convert frame to RGB
-                    frame = cv2.cvtColor(self.frame_buffer, cv2.COLOR_BGR2RGB)
-                    
-                    # Convert to QImage and display
-                    h, w, ch = frame.shape
-                    bytes_per_line = ch * w
-                    qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-                    
-                    # Scale image to fit label while maintaining aspect ratio
-                    scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
-                        self.size(), 
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.FastTransformation
-                    )
-                    self.setPixmap(scaled_pixmap)
-        except Exception as e:
-            print(f"Error updating frame for camera {self.camera_id}: {e}")
+        ret, frame = self.cap.read()
+        if not ret:
+            return
 
-    def stop_camera(self):
-        """Stop the camera feed"""
-        self.is_running = False
-        if self.update_timer:
-            self.update_timer.stop()
-        if self.camera:
-            self.camera.release()
-        self.camera = None
-        self.setText(f"Camera {self.camera_id}\nStopped")
-        self.setStyleSheet("background-color: black; color: white;")
+        if not self.first_frame_received:
+            self.clear()
+            self.first_frame_received = True
+
+        # Apply image processing for better quality
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Adjust brightness and contrast
+        alpha = 1.2  # Contrast control (1.0-3.0)
+        beta = 10    # Brightness control (0-100)
+        frame = cv2.convertScaleAbs(frame, alpha=alpha, beta=beta)
+        
+        h, w, ch = frame.shape
+        bytes_per_line = ch * w
+        qt_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(qt_img).scaled(
+            self.size(), Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation)
+        self.setPixmap(pixmap)
 
     def mousePressEvent(self, event):
         """Handle mouse click to maximize/restore camera"""
@@ -250,54 +227,28 @@ class CameraFeed(QLabel):
             self.parent_window.toggle_camera_maximize(self.camera_id)
         super().mousePressEvent(event)
 
+    def stop_camera(self):
+        """Stop camera capture and release resources"""
+        self.timer.stop()
+        if self.cap:
+            self.cap.release()
+            self.cap = None
+
+
 class CameraWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Multi-Camera Feed")
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(1000, 800)
         self.setWindowFlags(Qt.WindowType.Window)
-        self.maximized_camera_id = None  # Track which camera is maximized
 
-        # Add size controls
-        self.size_controls = QWidget()
-        size_layout = QHBoxLayout(self.size_controls)
-        
-        # Add size presets
-        size_presets = QComboBox()
-        size_presets.addItems(["Small (800x600)", "Medium (1280x720)", "Large (1920x1080)", "Custom"])
-        size_presets.currentTextChanged.connect(self.handle_size_preset)
-        size_layout.addWidget(QLabel("Size:"))
-        size_layout.addWidget(size_presets)
-        
-        # Add custom size inputs
-        self.width_input = QSpinBox()
-        self.width_input.setRange(400, 3840)
-        self.width_input.setValue(1280)
-        self.width_input.valueChanged.connect(self.update_custom_size)
-        
-        self.height_input = QSpinBox()
-        self.height_input.setRange(300, 2160)
-        self.height_input.setValue(720)
-        self.height_input.valueChanged.connect(self.update_custom_size)
-        
-        size_layout.addWidget(QLabel("Width:"))
-        size_layout.addWidget(self.width_input)
-        size_layout.addWidget(QLabel("Height:"))
-        size_layout.addWidget(self.height_input)
-        
-        # Add maximize/restore button
-        self.maximize_btn = QPushButton("Maximize")
-        self.maximize_btn.clicked.connect(self.toggle_maximize)
-        size_layout.addWidget(self.maximize_btn)
-        
-        size_layout.addStretch()
+        # Add window state tracking
+        self.is_minimized = False
+        self.previous_geometry = None
 
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.main_layout = QVBoxLayout(self.central_widget)
-        
-        # Add size controls at the top
-        self.main_layout.addWidget(self.size_controls)
 
         # Create stacked layout for grid and maximized views
         self.stacked_layout = QStackedLayout()
@@ -328,131 +279,116 @@ class CameraWindow(QMainWindow):
         self.back_button.setMaximumHeight(40)
         self.maximized_layout.addWidget(self.back_button)
 
-        # Add maximized camera container
-        self.maximized_container = QWidget()
-        self.maximized_layout.addWidget(self.maximized_container)
-        self.maximized_layout.addStretch()
+        # Add minimize/maximize button
+        self.minimize_button = QPushButton("Minimize")
+        self.minimize_button.clicked.connect(self.toggle_minimize)
+        self.minimize_button.setMaximumHeight(40)
+        self.maximized_layout.addWidget(self.minimize_button)
+
+        # Placeholder for maximized camera
+        self.maximized_camera_label = QLabel("Click on a camera to maximize")
+        self.maximized_camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.maximized_camera_label.setStyleSheet("border: 2px solid gray; background-color: black; color: white;")
+        self.maximized_layout.addWidget(self.maximized_camera_label)
 
         # Add widgets to stacked layout
-        self.stacked_layout.addWidget(self.grid_widget)
+        self.stacked_layout.addWidget(self.grid_widget)      # index 0 = grid view
         self.stacked_layout.addWidget(self.maximized_widget)
 
         # Add stacked layout to main layout
-        self.main_layout.addLayout(self.stacked_layout)
+        stacked_container = QWidget()
+        stacked_container.setLayout(self.stacked_layout)
+        self.main_layout.addWidget(stacked_container)
 
-        # Start all cameras
-        self.start_cameras()
+        # Track current state
+        self.current_view = "grid"  # "grid" or "maximized"
+        self.maximized_camera_id = None
 
-    def handle_size_preset(self, preset):
-        """Handle size preset selection"""
-        if preset == "Small (800x600)":
-            self.resize(800, 600)
-        elif preset == "Medium (1280x720)":
-            self.resize(1280, 720)
-        elif preset == "Large (1920x1080)":
-            self.resize(1920, 1080)
-        # Custom size is handled by the spinboxes
+        # Timer for maximized view updates
+        self.maximized_timer = QTimer()
+        self.maximized_timer.timeout.connect(self.update_maximized_frame)
 
-    def update_custom_size(self):
-        """Update window size based on custom inputs"""
-        width = self.width_input.value()
-        height = self.height_input.value()
-        self.resize(width, height)
-
-    def toggle_maximize(self):
-        """Toggle between maximized and normal window state"""
-        if self.is_maximized:
-            self.showNormal()
-            self.maximize_btn.setText("Maximize")
+    def toggle_minimize(self):
+        """Toggle between minimized and normal window state"""
+        if self.is_minimized:
+            # Restore previous geometry
+            if self.previous_geometry:
+                self.setGeometry(self.previous_geometry)
+            self.minimize_button.setText("Minimize")
+            self.is_minimized = False
         else:
-            self.showMaximized()
-            self.maximize_btn.setText("Restore")
-        self.is_maximized = not self.is_maximized
+            # Save current geometry and minimize
+            self.previous_geometry = self.geometry()
+            self.setGeometry(self.x(), self.y(), 320, 240)  # Small size for minimized state
+            self.minimize_button.setText("Maximize")
+            self.is_minimized = True
 
     def start_cameras(self, width=640, height=480):
         """Start all camera feeds"""
-        for feed in self.camera_feeds:
-            feed.start_camera(width, height)
+        print("[CameraWindow] Starting all cameras...")
+        for camera_feed in self.camera_feeds:
+            camera_feed.start_camera(width, height)
 
     def toggle_camera_maximize(self, camera_id):
         """Toggle between grid view and maximized view for a specific camera"""
-        if self.maximized_camera_id is None:
-            # Maximize the selected camera
-            self.maximized_camera_id = camera_id
+        if self.current_view == "grid":
             self.show_maximized_view(camera_id)
         else:
-            # Return to grid view
             self.show_grid_view()
 
     def show_maximized_view(self, camera_id):
-        """Show maximized view for a specific camera"""
-        # Get the camera feed to maximize
-        camera_feed = self.camera_feeds[camera_id]
-        
-        # Remove the camera feed from the grid layout
-        self.grid_layout.removeWidget(camera_feed)
-        camera_feed.setParent(None)
-        
-        # Add the camera feed to the maximized container
-        if not self.maximized_container.layout():
-            self.maximized_container.setLayout(QVBoxLayout())
-        self.maximized_container.layout().addWidget(camera_feed)
-
-        # Switch to maximized view
+        """Show maximized view of a specific camera"""
+        self.current_view = "maximized"
+        self.maximized_camera_id = camera_id
         self.stacked_layout.setCurrentIndex(1)
-        self.maximize_btn.setText("Restore")
+
+        # Update back button text
+        self.back_button.setText(f"← Back to Grid View (Camera {camera_id + 1} Maximized)")
+
+        # Start timer for maximized view
+        self.maximized_timer.start(30)
+
+        print(f"[CameraWindow] Maximized camera {camera_id + 1}")
 
     def show_grid_view(self):
         """Show grid view with all cameras"""
-        if self.maximized_camera_id is not None:
-            # Get the maximized camera feed
-            camera_feed = self.camera_feeds[self.maximized_camera_id]
-            
-            # Remove the camera feed from the maximized container
-            if self.maximized_container.layout():
-                self.maximized_container.layout().removeWidget(camera_feed)
-            camera_feed.setParent(None)
-            
-            # Add the camera feed back to the grid layout
-            row = self.maximized_camera_id // 2
-            col = self.maximized_camera_id % 2
-            self.grid_layout.addWidget(camera_feed, row, col)
-
-        # Switch to grid view
-        self.stacked_layout.setCurrentIndex(0)
-        self.maximize_btn.setText("Maximize")
+        self.current_view = "grid"
         self.maximized_camera_id = None
+        self.stacked_layout.setCurrentIndex(0)
+
+        # Stop maximized timer
+        self.maximized_timer.stop()
+
+        print("[CameraWindow] Returned to grid view")
+
+    def update_maximized_frame(self):
+        """Update the maximized camera frame"""
+        if self.maximized_camera_id is None:
+            return
+
+        camera_feed = self.camera_feeds[self.maximized_camera_id]
+        if not camera_feed.cap:
+            return
+
+        ret, frame = camera_feed.cap.read()
+        if not ret:
+            return
+
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = frame.shape
+        bytes_per_line = ch * w
+        qt_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(qt_img).scaled(
+            self.maximized_camera_label.size(), Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation)
+        self.maximized_camera_label.setPixmap(pixmap)
 
     def closeEvent(self, event):
-        """Handle window close event"""
-        try:
-            # Stop all cameras
-            for feed in self.camera_feeds:
-                try:
-                    feed.stop_camera()
-                except Exception as e:
-                    print(f"Error stopping camera: {e}")
-            
-            # Clear camera feeds list
-            self.camera_feeds.clear()
-            
-            # Clear layouts
-            if self.maximized_container.layout():
-                while self.maximized_container.layout().count():
-                    item = self.maximized_container.layout().takeAt(0)
-                    if item.widget():
-                        item.widget().deleteLater()
-            
-            while self.grid_layout.count():
-                item = self.grid_layout.takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
-            
-            # Accept the close event
-            event.accept()
-        except Exception as e:
-            print(f"Error during camera window cleanup: {e}")
-            event.accept()  # Still close the window even if cleanup fails
+        """Clean up when window is closed"""
+        self.maximized_timer.stop()
+        for camera_feed in self.camera_feeds:
+            camera_feed.stop_camera()
+        event.accept()
 
 class MecaPendant(QWidget):
     """
