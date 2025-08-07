@@ -130,7 +130,7 @@ class StepDialog(QDialog):
         # Add tooltips with descriptions
         self.move_type_combo.setToolTip(
             "<b>MoveJ</b>: Joint movement - Fastest motion, but path is unpredictable.<br>"
-            "<b>MoveL</b>: Linear movement - Robot moves in a straight line.<br>"
+            "<b>MoveL</b>: Linear movement - Robot moves in a straight line.<br>" 
             "<b>MoveP</b>: Point-to-point - Similar to linear but with smoother acceleration."
         )
 
@@ -399,7 +399,7 @@ class StepDialog(QDialog):
         return {}
 
 
-class ProgrammingInterface(QWidget):
+class  ProgrammingInterface(QWidget):
     """Visual programming interface for the Meca500 robot"""
 
     # Signal to update console in main GUI

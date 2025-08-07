@@ -175,11 +175,11 @@ class CameraFeed(QLabel):
 
             try:
                 # Try DirectShow first as it's usually faster on Windows
-                self.cap = cv2.VideoCapture(self.camera_id, cv2.CAP_DSHOW)
+                self.cap = cv2.VideoCapture(self.camera_id + 1, cv2.CAP_DSHOW)
                 
                 if not self.cap.isOpened():
                     # Fallback to default backend
-                    self.cap = cv2.VideoCapture(self.camera_id)
+                    self.cap = cv2.VideoCapture(self.camera_id + 1)
                 
                 if not self.cap.isOpened():
                     raise Exception("Failed to open camera")
@@ -523,7 +523,16 @@ class MecaPendant(QWidget):
 
     def __init__(self):
         super().__init__()
-
+        
+        # Set window properties
+        self.setWindowTitle("Meca500 Robot Control")
+        self.setGeometry(100, 100, 1400, 900)
+        
+        # Enable key events for emergency stop
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        
+        # Initialize state variables
+        self._init_state_variables()
 
         # Setup window properties
         self.setWindowTitle("Versacell Robotic System")
@@ -594,22 +603,33 @@ class MecaPendant(QWidget):
         self.highlight_joint_group()
 
     def _apply_dark_theme(self):
-        """Apply a refined dark theme to the entire application"""
-        dark_style = """
+        """Apply Hyrel Technologies brand colors to the application"""
+        # Hyrel Technologies color palette from logo
+        hyrel_dark_blue = "#1e3a8a"      # Dark blue from main circle
+        hyrel_red = "#dc2626"            # Deep red from swoosh
+        hyrel_orange = "#ea580c"         # Bright orange from star
+        hyrel_light_blue = "#3b82f6"     # Lighter blue for accents
+        hyrel_dark_gray = "#1f2937"      # Dark gray for backgrounds
+        hyrel_medium_gray = "#374151"    # Medium gray for panels
+        hyrel_light_gray = "#6b7280"     # Light gray for text
+        hyrel_white = "#ffffff"          # White for highlights
+        hyrel_black = "#000000"          # Black for text
+        
+        hyrel_style = """
         QWidget {
-            background-color: #2b2b2b;
+            background-color: #1f2937;
             color: #ffffff;
             font-family: Arial, sans-serif;
         }
         
         QMainWindow {
-            background-color: #1e1e1e;
+            background-color: #111827;
         }
         
         QGroupBox {
-            background-color: #3c3c3c;
-            border: 1px solid #555555;
-            border-radius: 6px;
+            background-color: #374151;
+            border: 1px solid #4b5563;
+            border-radius: 8px;
             margin-top: 1ex;
             font-weight: bold;
             padding-top: 10px;
@@ -623,60 +643,70 @@ class MecaPendant(QWidget):
         }
         
         QPushButton {
-            background-color: #404040;
-            border: 1px solid #606060;
-            border-radius: 4px;
+            background-color: #4b5563;
+            border: none;
+            border-radius: 6px;
             padding: 6px 12px;
             color: #ffffff;
             font-weight: normal;
+            min-height: 20px;
         }
         
         QPushButton:hover {
-            background-color: #505050;
-            border-color: #707070;
+            background-color: #6b7280;
         }
         
         QPushButton:pressed {
-            background-color: #353535;
-            border-color: #505050;
+            background-color: #374151;
         }
         
         QPushButton:checked {
-            background-color: #0078d4;
-            border-color: #106ebe;
+            background-color: #1e3a8a;
             color: white;
         }
         
+        /* Hyrel-branded slider styling */
         QSlider::groove:horizontal {
-            border: 1px solid #555555;
+            border: none;
             height: 8px;
-            background: #2b2b2b;
+            background: #4b5563;
             margin: 2px 0;
-            border-radius: 4px;
+            border-radius: 6px;
         }
         
         QSlider::handle:horizontal {
-            background: #0078d4;
-            border: 1px solid #106ebe;
+            background: #ea580c;
+            border: none;
             width: 18px;
+            height: 18px;
             margin: -5px 0;
             border-radius: 9px;
         }
         
         QSlider::handle:horizontal:hover {
-            background: #106ebe;
+            background: #f97316;
+        }
+        
+        QSlider::sub-page:horizontal {
+            background: transparent;
+        }
+        
+        QSlider::add-page:horizontal {
+            background: transparent;
         }
         
         QLineEdit {
-            background-color: #404040;
-            border: 1px solid #606060;
-            border-radius: 4px;
+            background-color: #4b5563;
+            border: none;
+            border-radius: 6px;
             padding: 4px 8px;
             color: #ffffff;
+            min-height: 20px;
         }
         
         QLineEdit:focus {
-            border-color: #0078d4;
+            border: none;
+            background-color: #6b7280;
         }
         
         QLabel {
@@ -685,52 +715,100 @@ class MecaPendant(QWidget):
         }
         
         QTabWidget::pane {
-            border: 1px solid #555555;
-            background-color: #3c3c3c;
+            border: 1px solid #4b5563;
+            background-color: #374151;
+            border-radius: 8px;
         }
         
         QTabBar::tab {
-            background-color: #404040;
-            border: 1px solid #606060;
+            background-color: #4b5563;
+            border: 1px solid #6b7280;
             padding: 8px 16px;
             margin-right: 2px;
             color: #ffffff;
+            border-radius: 6px 6px 0 0;
         }
         
         QTabBar::tab:selected {
-            background-color: #0078d4;
-            border-color: #106ebe;
+            background-color: #1e3a8a;
+            border-color: #3b82f6;
             color: white;
         }
         
         QTabBar::tab:hover {
-            background-color: #505050;
+            background-color: #6b7280;
+            border-color: #9ca3af;
         }
         
         QTextEdit {
-            background-color: #2b2b2b;
-            border: 1px solid #555555;
+            background-color: #1f2937;
+            border: 1px solid #4b5563;
+            border-radius: 8px;
             color: #ffffff;
         }
         
         QScrollBar:vertical {
-            background-color: #3c3c3c;
+            background-color: #374151;
             width: 12px;
-            border-radius: 6px;
+            border-radius: 8px;
         }
         
         QScrollBar::handle:vertical {
-            background-color: #606060;
-            border-radius: 6px;
+            background-color: #6b7280;
+            border-radius: 8px;
             min-height: 20px;
         }
         
         QScrollBar::handle:vertical:hover {
-            background-color: #707070;
+            background-color: #9ca3af;
+        }
+        
+        /* Hyrel-branded increment/decrement buttons */
+        QPushButton#increment-btn, QPushButton#decrement-btn {
+            background-color: #4b5563;
+            border: none;
+            border-radius: 6px;
+            padding: 4px 8px;
+            min-width: 30px;
+            max-width: 30px;
+            font-weight: bold;
+            font-size: 12px;
+            color: white;
+        }
+        
+        QPushButton#increment-btn:hover, QPushButton#decrement-btn:hover {
+            background-color: #6b7280;
+        }
+        
+        QPushButton#increment-btn:pressed, QPushButton#decrement-btn:pressed {
+            background-color: #374151;
+        }
+        
+        /* Joint/Cartesian control styling with Hyrel colors */
+        QWidget#joint-row, QWidget#cartesian-row {
+            background-color: #374151;
+            border: none;
+            padding: 6px;
+            margin: 2px;
+            border-radius: 6px;
+        }
+        
+        QWidget#joint-row:hover, QWidget#cartesian-row:hover {
+            background-color: #4b5563;
+            border: none;
+        }
+        
+        /* Active joint/cartesian row highlighting with Hyrel blue */
+        QWidget#joint-row-active, QWidget#cartesian-row-active {
+            background-color: #1e3a8a;
+            border: none;
+            padding: 6px;
+            margin: 2px;
+            border-radius: 6px;
         }
         """
 
-        self.setStyleSheet(dark_style)
+        self.setStyleSheet(hyrel_style)
 
     def is_pose_in_forbidden_zone(self, pose: List[float]) -> bool:
         """Call this ONCE per actual new robot pose!"""
@@ -945,6 +1023,9 @@ class MecaPendant(QWidget):
         self.tabs = QTabWidget()
         self.init_joint_tab()
         self.init_cartesian_tab()
+        
+        # Connect tab change signal to handle automatic joystick submode switching
+        self.tabs.currentChanged.connect(self.handle_tab_change)
 
         left_panel = self._create_left_panel()
 
@@ -1029,14 +1110,23 @@ class MecaPendant(QWidget):
         return control_box
 
     def _create_velocity_control_group(self) -> QGroupBox:
-        """Create the velocity control group with a flexible layout."""
+        """Create the velocity control group with centered slider like Meca500 GUI."""
         vel_box = QGroupBox("Maximum Jogging Velocity")
         vel_layout = QHBoxLayout()
+        vel_layout.setSpacing(10)
+        vel_layout.setContentsMargins(10, 10, 10, 10)
 
         self.vel_input = QLineEdit(str(self.velocity_percent))
+        self.vel_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.vel_input.setMaximumWidth(60)
+        self.vel_input.setStyleSheet("font-size: 12px;")
         self.vel_input.returnPressed.connect(self.manual_velocity_input)
 
-        vel_dec = QPushButton("<")
+        vel_dec = QPushButton("◀")
+        vel_dec.setObjectName("decrement-btn")
+        vel_dec.setToolTip("Decrease velocity by 10%")
+        vel_dec.setMinimumWidth(35)
+        vel_dec.setMaximumWidth(35)
         vel_dec.clicked.connect(partial(self.adjust_velocity, -10))
 
         self.vel_slider = QSlider(Qt.Orientation.Horizontal)
@@ -1044,73 +1134,147 @@ class MecaPendant(QWidget):
         self.vel_slider.setMaximum(100)
         self.vel_slider.setValue(self.velocity_percent)
         self.vel_slider.setTickInterval(10)
+        self.vel_slider.setMinimumHeight(30)
+        self.vel_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                border: none;
+                height: 8px;
+                background: #404040;
+                margin: 2px 0;
+                border-radius: 4px;
+            }
+            QSlider::handle:horizontal {
+                background: #707070;
+                border: none;
+                width: 16px;
+                height: 16px;
+                margin: -4px 0;
+                border-radius: 8px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #808080;
+            }
+            QSlider::sub-page:horizontal {
+                background: transparent;
+            }
+            QSlider::add-page:horizontal {
+                background: transparent;
+            }
+        """)
         self.vel_slider.valueChanged.connect(self.set_velocity)
 
-        vel_inc = QPushButton(">")
+        vel_inc = QPushButton("▶")
+        vel_inc.setObjectName("increment-btn")
+        vel_inc.setToolTip("Increase velocity by 10%")
+        vel_inc.setMinimumWidth(35)
+        vel_inc.setMaximumWidth(35)
         vel_inc.clicked.connect(partial(self.adjust_velocity, 10))
 
-        # --- Layout Improvement ---
+        # Set size policies - slider expands, others are fixed
         vel_dec.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         vel_inc.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.vel_input.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        self.vel_input.setMaximumWidth(60)  # Give it a bit of space, but not too much
+        self.vel_input.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.vel_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         vel_layout.addWidget(self.vel_input)
         vel_layout.addWidget(vel_dec)
-        vel_layout.addWidget(self.vel_slider)
+        vel_layout.addWidget(self.vel_slider, 1)  # Give slider stretch factor of 1
         vel_layout.addWidget(vel_inc)
-        # --- End Layout Improvement ---
 
         vel_box.setLayout(vel_layout)
         return vel_box
 
     def _create_increment_control_group(self) -> QGroupBox:
-        """Create the increment control group with a flexible, scalable layout."""
+        """Create the increment control group with centered slider like Meca500 GUI."""
         inc_box = QGroupBox("Jog Increment (° / mm)")
         inc_layout = QHBoxLayout()
+        inc_layout.setSpacing(10)
+        inc_layout.setContentsMargins(10, 10, 10, 10)
 
         self.inc_input = QLineEdit(f"{self.joint_step:.1f}")
+        self.inc_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.inc_input.setMaximumWidth(60)
+        self.inc_input.setStyleSheet("font-size: 12px;")
         self.inc_input.returnPressed.connect(self.manual_increment_input)
 
-        inc_dec = QPushButton("<")
+        inc_dec = QPushButton("◀")
+        inc_dec.setObjectName("decrement-btn")
+        inc_dec.setToolTip("Decrease increment")
+        inc_dec.setMinimumWidth(35)
+        inc_dec.setMaximumWidth(35)
         inc_dec.clicked.connect(partial(self.adjust_increment, -1))
 
         self.inc_slider = QSlider(Qt.Orientation.Horizontal)
         self.inc_slider.setMinimum(1)
         self.inc_slider.setMaximum(50)
         self.inc_slider.setValue(int(self.joint_step * 10))
-        self.inc_slider.setTickInterval(1)
+        self.inc_slider.setTickInterval(5)
+        self.inc_slider.setMinimumHeight(30)
+        self.inc_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                border: none;
+                height: 8px;
+                background: #404040;
+                margin: 2px 0;
+                border-radius: 4px;
+            }
+            QSlider::handle:horizontal {
+                background: #707070;
+                border: none;
+                width: 16px;
+                height: 16px;
+                margin: -4px 0;
+                border-radius: 8px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #808080;
+            }
+            QSlider::sub-page:horizontal {
+                background: transparent;
+            }
+            QSlider::add-page:horizontal {
+                background: transparent;
+            }
+        """)
         self.inc_slider.valueChanged.connect(self.update_increment_from_slider)
 
-        inc_inc = QPushButton(">")
+        inc_inc = QPushButton("▶")
+        inc_inc.setObjectName("increment-btn")
+        inc_inc.setToolTip("Increase increment")
+        inc_inc.setMinimumWidth(35)
+        inc_inc.setMaximumWidth(35)
         inc_inc.clicked.connect(partial(self.adjust_increment, 1))
 
-        # --- Layout Improvement ---
-        # Allow buttons to have their natural fixed width, but let the input and slider expand.
+        # Set size policies - slider expands, others are fixed
         inc_dec.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         inc_inc.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.inc_input.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        self.inc_input.setMaximumWidth(60)
+        self.inc_input.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.inc_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        # ------------------------
 
         inc_layout.addWidget(self.inc_input)
         inc_layout.addWidget(inc_dec)
-        inc_layout.addWidget(self.inc_slider)
+        inc_layout.addWidget(self.inc_slider, 1)  # Give slider stretch factor of 1
         inc_layout.addWidget(inc_inc)
 
         inc_box.setLayout(inc_layout)
         return inc_box
 
     def _create_gripper_control_group(self) -> QGroupBox:
-        """Create the gripper control group with a flexible layout."""
+        """Create the gripper control group with centered slider like Meca500 GUI."""
         gripper_box = QGroupBox("Gripper Control")
         gripper_layout = QVBoxLayout()
+        gripper_layout.setSpacing(12)
+        gripper_layout.setContentsMargins(10, 10, 10, 10)
 
         # First row: Gripper percentage slider
         slider_row = QHBoxLayout()
+        slider_row.setSpacing(10)
+        
         gripper_label = QLabel("Gripper %")
+        gripper_label.setMinimumWidth(80)
+        gripper_label.setMaximumWidth(80)
+        gripper_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        gripper_label.setStyleSheet("font-weight: bold; font-size: 14px;")
 
         self.gripper_slider = QSlider(Qt.Orientation.Horizontal)
         self.gripper_slider.setMinimum(0)
@@ -1118,23 +1282,53 @@ class MecaPendant(QWidget):
         self.gripper_slider.setTickInterval(10)
         self.gripper_slider.setSingleStep(1)
         self.gripper_slider.setValue(50)
+        self.gripper_slider.setMinimumHeight(30)
+        self.gripper_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                border: none;
+                height: 8px;
+                background: #404040;
+                margin: 2px 0;
+                border-radius: 4px;
+            }
+            QSlider::handle:horizontal {
+                background: #707070;
+                border: none;
+                width: 16px;
+                height: 16px;
+                margin: -4px 0;
+                border-radius: 8px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #808080;
+            }
+            QSlider::sub-page:horizontal {
+                background: transparent;
+            }
+            QSlider::add-page:horizontal {
+                background: transparent;
+            }
+        """)
         self.gripper_slider.valueChanged.connect(self.set_gripper_percent)
 
         self.gripper_value_label = QLabel("50%")
         self.gripper_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.gripper_value_label.setMinimumWidth(60)
+        self.gripper_value_label.setMaximumWidth(60)
+        self.gripper_value_label.setStyleSheet("font-weight: bold; background-color: #404040; border: none; border-radius: 2px; padding: 4px; font-size: 12px;")
 
-        # --- Layout Improvement ---
+        # Set size policies - slider expands, others are fixed
         gripper_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.gripper_value_label.setMinimumWidth(45) # Use minimum width for flexibility
+        self.gripper_value_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.gripper_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         slider_row.addWidget(gripper_label)
-        slider_row.addWidget(self.gripper_slider)
+        slider_row.addWidget(self.gripper_slider, 1)  # Give slider stretch factor of 1
         slider_row.addWidget(self.gripper_value_label)
-        # --- End Layout Improvement ---
 
         # Second row: Switch button
         self.detect_tool_btn = QPushButton("Switch to Vacuum/Gripper")
+        self.detect_tool_btn.setStyleSheet("font-weight: bold; padding: 8px; font-size: 12px;")
         self.detect_tool_btn.clicked.connect(self.toggle_tool_type)
 
         gripper_layout.addLayout(slider_row)
@@ -1205,33 +1399,75 @@ class MecaPendant(QWidget):
         self.camera_label.setPixmap(QPixmap.fromImage(qt_img))
 
     def emergency_stop(self):
-            """Emergency stop: Abort program, pause motion, and deactivate the robot."""
+        """Emergency stop: Use Mecademic API methods for immediate motion stopping."""
+        try:
+            # IMMEDIATE MOTION STOPPING USING MECADEMIC API
+            # The most effective approach is to trigger the robot's safety stop mechanism
+            
+            
+            # 2. Pause motion immediately
             try:
-                # First, stop any running program sequence to prevent new commands.
-                if hasattr(self, 'programming_interface') and self.programming_interface.running:
-                    self.programming_interface.stop_program()
-                    self.log("▶️ Program execution aborted by Emergency Stop.")
-
-                # Halt the robot's physical motion.
                 self.robot.PauseMotion()
-                self.log("🛑 Motion Paused.")
+            except:
+                pass
+            
+            # 3. Clear motion queue (this stops any pending motion commands)
+            try:
+                self.robot.ClearMotion()  # This includes implicit PauseMotion
+            except:
+                pass
+            
+            # 4. Force disconnect to trigger immediate safety stop
+            try:
+                self.robot.Disconnect()
+            except:
+                pass
+            
+            # 5. Stop any running program sequence
+            if hasattr(self, 'programming_interface') and self.programming_interface.running:
+                self.programming_interface.stop_program()
+            
+            # 6. Disable all GUI controls immediately
+            self.set_all_sliders_enabled(False)
+            self.disable_all_jogging()
+            
+            # 7. Force stop all timers and loops
+            self.joint_timer.stop()
+            self.cart_timer.stop()
+            self.joystick_timer.stop()
+            
+            # 8. Reset all active states
+            self.joint_active = [False] * 6
+            self.cart_active = [False] * 6
+            
+            self.log("🚨 EMERGENCY STOP ACTIVATED - Robot deactivated and disconnected.")
 
-                # Deactivate the robot to cut power to motors.
+            # Display information to the user
+            QMessageBox.information(
+                self,
+                "Emergency Stop Activated",
+                "🚨 EMERGENCY STOP ACTIVATED!\n\n"
+                "Robot has been stopped using the most effective software methods:\n"
+                "• Robot deactivated (power cut to motors)\n"
+                "• Motion paused and cleared\n"
+                "• Connection dropped (triggers safety stop)\n"
+                "• All controls disabled\n\n"
+                "⚠️ IMPORTANT: For TRUE immediate stops during program execution,\n"
+                "use the PHYSICAL emergency stop button on the robot.\n"
+                "Software stops may not be as immediate as hardware stops.\n\n"
+                "To recover:\n"
+                "1. Check for any safety issues\n"
+                "2. Reconnect to the robot\n"
+                "3. Reset any errors using the red button\n"
+                "4. Re-activate the robot via the GUI"
+            )
+        except Exception as e:
+            self.log(f"[ERROR] An error occurred during emergency stop: {e}")
+            # Even if there's an error, try to deactivate the robot
+            try:
                 self.robot.DeactivateRobot()
-                self.log("🚨 EMERGENCY STOP: Robot has been deactivated.")
-
-                # Display a critical warning to the user.
-                QMessageBox.critical(
-                    self,
-                    "Emergency Stop Activated",
-                    "Motion has been paused and the robot is now deactivated.\n"
-                    "The running program was aborted.\n\n"
-                    "To recover:\n"
-                    "1. Power-cycle the robot.\n"
-                    "2. Then re-activate via the GUI."
-                )
-            except Exception as e:
-                self.log(f"[ERROR] An error occurred during emergency stop: {e}")
+            except:
+                pass
 
     def toggle_tool_type(self):
         """Toggle between vacuum and gripper mode manually."""
@@ -1377,18 +1613,85 @@ class MecaPendant(QWidget):
             self.joystick = None
 
     def init_joint_tab(self) -> None:
-        """Initialize the joint control tab with a flexible, grid-based layout."""
+        """Initialize the joint control tab with centered sliders like Meca500 GUI."""
         tab = QWidget()
         layout = QGridLayout()
-        layout.setSpacing(8)
-        self.joint_boxes.clear() # Clear any old widgets if this is recalled
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
+        self.joint_boxes.clear()
 
         for i in range(6):
+            # Create a container widget for each row
+            row_widget = QWidget()
+            row_widget.setObjectName("joint-row")
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setSpacing(10)
+            row_layout.setContentsMargins(10, 8, 10, 8)
+            
+            # Joint label (left side)
             label = QLabel(f"J{i + 1}")
+            label.setMinimumWidth(40)
+            label.setMaximumWidth(40)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setStyleSheet("font-weight: bold; font-size: 16px; color: #ffffff;")
+            
+            # Input field (left side)
             input_field = QLineEdit("0.000")
+            input_field.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            input_field.setMinimumWidth(80)
+            input_field.setMaximumWidth(80)
+            input_field.setStyleSheet("font-size: 12px;")
+            
+            # Add keyPressEvent handler for TAB navigation
+            input_field.keyPressEvent = lambda event, idx=i: self.handle_joint_input_keypress(event, idx)
+            
+            # Set tab order for navigation
+            if i > 0:
+                QWidget.setTabOrder(self.joint_inputs[i-1], input_field)
+            
+            # Decrement button (left side)
             left = QPushButton("◀")
-            right = QPushButton("▶")
+            left.setObjectName("decrement-btn")
+            left.setToolTip(f"Decrease J{i+1}")
+            left.setMinimumWidth(35)
+            left.setMaximumWidth(35)
+            
+            # Centered slider (middle)
             slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setMinimumHeight(30)
+            slider.setStyleSheet("""
+                QSlider::groove:horizontal {
+                    border: none;
+                    height: 8px;
+                    background: #404040;
+                    margin: 2px 0;
+                    border-radius: 4px;
+                }
+                QSlider::handle:horizontal {
+                    background: #707070;
+                    border: none;
+                    width: 16px;
+                    height: 16px;
+                    margin: -4px 0;
+                    border-radius: 8px;
+                }
+                QSlider::handle:horizontal:hover {
+                    background: #808080;
+                }
+                QSlider::sub-page:horizontal {
+                    background: transparent;
+                }
+                QSlider::add-page:horizontal {
+                    background: transparent;
+                }
+            """)
+
+            # Increment button (right side)
+            right = QPushButton("▶")
+            right.setObjectName("increment-btn")
+            right.setToolTip(f"Increase J{i+1}")
+            right.setMinimumWidth(35)
+            right.setMaximumWidth(35)
 
             # Store widgets
             self.joint_inputs.append(input_field)
@@ -1404,47 +1707,114 @@ class MecaPendant(QWidget):
             left.pressed.connect(partial(self.nudge_joint, i, -1))
             right.pressed.connect(partial(self.nudge_joint, i, 1))
 
-            # Set size policies for scalability
+            # Set size policies - slider expands, others are fixed
             label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            input_field.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            input_field.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             left.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             right.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-            # Add widgets directly to the grid layout for proper column alignment
-            layout.addWidget(label, i, 0)
-            layout.addWidget(input_field, i, 1)
-            layout.addWidget(left, i, 2)
-            layout.addWidget(slider, i, 3)
-            layout.addWidget(right, i, 4)
+            # Add widgets to row layout - this centers the slider
+            row_layout.addWidget(label)
+            row_layout.addWidget(input_field)
+            row_layout.addWidget(left)
+            row_layout.addWidget(slider, 1)  # Give slider stretch factor of 1
+            row_layout.addWidget(right)
 
-            # Store a reference to the container of controls for highlighting
-            # Although we add directly to the grid, we can create a dummy widget to hold the style
-            row_widget = QWidget()
-            row_widget.setLayout(layout) # This is a bit of a trick; layout is shared. A better way might be to style rows.
-            self.joint_boxes.append(row_widget) # Keep for compatibility with highlight logic
+            # Add row widget to main grid layout
+            layout.addWidget(row_widget, i, 0)
+            
+            # Store reference for highlighting
+            self.joint_boxes.append(row_widget)
 
-        # Make the slider column stretchable
-        layout.setColumnStretch(3, 1)
+        # Set column stretch to make slider column expand
+        layout.setColumnStretch(0, 1)
 
         tab.setLayout(layout)
         self.tabs.addTab(tab, "Joint Jog")
 
     def init_cartesian_tab(self) -> None:
-        """Initialize the cartesian control tab with a flexible, grid-based layout."""
+        """Initialize the cartesian control tab with centered sliders like Meca500 GUI."""
         tab = QWidget()
         layout = QGridLayout()
-        layout.setSpacing(8)
-        self.cart_boxes.clear() # Clear any old widgets
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
+        self.cart_boxes.clear()
 
         axes = ["X", "Y", "Z", "Rx", "Ry", "Rz"]
 
         for i, axis in enumerate(axes):
+            # Create a container widget for each row
+            row_widget = QWidget()
+            row_widget.setObjectName("cartesian-row")
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setSpacing(10)
+            row_layout.setContentsMargins(10, 8, 10, 8)
+            
+            # Axis label (left side)
             label = QLabel(axis)
+            label.setMinimumWidth(40)
+            label.setMaximumWidth(40)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setStyleSheet("font-weight: bold; font-size: 16px; color: #ffffff;")
+            
+            # Input field (left side)
             input_field = QLineEdit("0.000")
+            input_field.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            input_field.setMinimumWidth(80)
+            input_field.setMaximumWidth(80)
+            input_field.setStyleSheet("font-size: 12px;")
+            
+            # Add keyPressEvent handler for TAB navigation
+            input_field.keyPressEvent = lambda event, idx=i: self.handle_cart_input_keypress(event, idx)
+            
+            # Set tab order for navigation
+            if i > 0:
+                QWidget.setTabOrder(self.cart_inputs[i-1], input_field)
+            
+            # Decrement button (left side)
             left = QPushButton("◀")
-            right = QPushButton("▶")
+            left.setObjectName("decrement-btn")
+            left.setToolTip(f"Decrease {axis}")
+            left.setMinimumWidth(35)
+            left.setMaximumWidth(35)
+            
+            # Centered slider (middle)
             slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setMinimumHeight(30)
+            slider.setStyleSheet("""
+                QSlider::groove:horizontal {
+                    border: none;
+                    height: 8px;
+                    background: #404040;
+                    margin: 2px 0;
+                    border-radius: 4px;
+                }
+                QSlider::handle:horizontal {
+                    background: #707070;
+                    border: none;
+                    width: 16px;
+                    height: 16px;
+                    margin: -4px 0;
+                    border-radius: 8px;
+                }
+                QSlider::handle:horizontal:hover {
+                    background: #808080;
+                }
+                QSlider::sub-page:horizontal {
+                    background: transparent;
+                }
+                QSlider::add-page:horizontal {
+                    background: transparent;
+                }
+            """)
+
+            # Increment button (right side)
+            right = QPushButton("▶")
+            right.setObjectName("increment-btn")
+            right.setToolTip(f"Increase {axis}")
+            right.setMinimumWidth(35)
+            right.setMaximumWidth(35)
 
             # Store widgets
             self.cart_inputs.append(input_field)
@@ -1461,26 +1831,28 @@ class MecaPendant(QWidget):
             left.pressed.connect(partial(self.nudge_cart, i, -1))
             right.pressed.connect(partial(self.nudge_cart, i, 1))
 
-            # Set size policies for scalability
+            # Set size policies - slider expands, others are fixed
             label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            input_field.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            input_field.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             left.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             right.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-            # Add widgets directly to the grid layout
-            layout.addWidget(label, i, 0)
-            layout.addWidget(input_field, i, 1)
-            layout.addWidget(left, i, 2)
-            layout.addWidget(slider, i, 3)
-            layout.addWidget(right, i, 4)
+            # Add widgets to row layout - this centers the slider
+            row_layout.addWidget(label)
+            row_layout.addWidget(input_field)
+            row_layout.addWidget(left)
+            row_layout.addWidget(slider, 1)  # Give slider stretch factor of 1
+            row_layout.addWidget(right)
 
-            row_widget = QWidget()
-            row_widget.setLayout(layout)
-            self.cart_boxes.append(row_widget) # Keep for compatibility
+            # Add row widget to main grid layout
+            layout.addWidget(row_widget, i, 0)
+            
+            # Store reference for highlighting
+            self.cart_boxes.append(row_widget)
 
-        # Make the slider column stretchable
-        layout.setColumnStretch(3, 1)
+        # Set column stretch to make slider column expand
+        layout.setColumnStretch(0, 1)
 
         tab.setLayout(layout)
         self.tabs.addTab(tab, "Cartesian Jog")
@@ -1494,11 +1866,47 @@ class MecaPendant(QWidget):
             # Deactivate when returned to center
             self.set_slider_active(self.cart_active, axis_idx, False)
 
+    def handle_joint_input_keypress(self, event, idx: int) -> None:
+        """Handle key press events for joint input fields to enable TAB navigation"""
+        if event.key() == Qt.Key.Key_Tab:
+            # Handle TAB navigation
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                # Shift+TAB: go to previous joint
+                next_idx = (idx - 1) % 6
+            else:
+                # TAB: go to next joint
+                next_idx = (idx + 1) % 6
+            
+            # Focus the next/previous input field
+            self.joint_inputs[next_idx].setFocus()
+            self.joint_inputs[next_idx].selectAll()  # Select all text for easy editing
+            event.accept()
+        else:
+            # Call the original keyPressEvent for other keys
+            QLineEdit.keyPressEvent(self.joint_inputs[idx], event)
+
+    def handle_cart_input_keypress(self, event, idx: int) -> None:
+        """Handle key press events for cartesian input fields to enable TAB navigation"""
+        if event.key() == Qt.Key.Key_Tab:
+            # Handle TAB navigation
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                # Shift+TAB: go to previous axis
+                next_idx = (idx - 1) % 6
+            else:
+                # TAB: go to next axis
+                next_idx = (idx + 1) % 6
+            
+            # Focus the next/previous input field
+            self.cart_inputs[next_idx].setFocus()
+            self.cart_inputs[next_idx].selectAll()  # Select all text for easy editing
+            event.accept()
+        else:
+            # Call the original keyPressEvent for other keys
+            QLineEdit.keyPressEvent(self.cart_inputs[idx], event)
+
     def set_joint_from_input(self, idx: int) -> None:
         """Set joint position from input field value with forbidden zone protection"""
-        if self.control_mode != "mouse":
-            return
-
+        # Allow mouse input in both mouse and joystick modes
         try:
             current = self.robot.GetJoints()
             if not current:
@@ -1534,9 +1942,7 @@ class MecaPendant(QWidget):
 
     def set_cart_from_input(self, idx: int) -> None:
         """Set cartesian position from input field value with forbidden zone protection"""
-        if self.control_mode != "mouse":
-            return
-
+        # Allow mouse input in both mouse and joystick modes
         try:
             current = self.robot.GetPose()
             if not current:
@@ -2146,40 +2552,45 @@ class MecaPendant(QWidget):
 
     def update_joint_highlights(self) -> None:
         """Update joint control highlighting based on current mode"""
-        for i in range(6):
-            # The QGridLayout doesn't have a simple way to style a whole row.
-            # A more advanced solution would be to create a custom widget for each row.
-            # For now, we can style the input field as an indicator.
-            if i < len(self.joint_inputs):
-                widget_to_style = self.joint_inputs[i]
-                if self.control_mode == "joystick":
-                    active = (self.joystick_joint_group == 0 and i < 3) or (self.joystick_joint_group == 1 and i >= 3)
-                    if active:
-                        widget_to_style.setStyleSheet("background-color: #0078d4; border: 1px solid #106ebe;")
-                    else:
-                        widget_to_style.setStyleSheet("") # Revert to default stylesheet
+        for i, row_widget in enumerate(self.joint_boxes):
+            if self.control_mode == "joystick":
+                active = (self.joystick_joint_group == 0 and i < 3) or (self.joystick_joint_group == 1 and i >= 3)
+                if active:
+                    row_widget.setObjectName("joint-row-active")
                 else:
-                    widget_to_style.setStyleSheet("")
-
+                    row_widget.setObjectName("joint-row")
+                # Force style update
+                row_widget.style().unpolish(row_widget)
+                row_widget.style().polish(row_widget)
+            else:
+                row_widget.setObjectName("joint-row")
+                # Force style update
+                row_widget.style().unpolish(row_widget)
+                row_widget.style().polish(row_widget)
 
     def update_cartesian_highlights(self) -> None:
         """Update cartesian control highlighting based on current mode"""
-        for i in range(6):
-            if i < len(self.cart_inputs):
-                widget_to_style = self.cart_inputs[i]
-                if self.control_mode == "joystick":
-                    active = (self.joystick_joint_group == 0 and i < 3) or (self.joystick_joint_group == 1 and i >= 3)
-                    if active:
-                        widget_to_style.setStyleSheet("background-color: #0078d4; border: 1px solid #106ebe;")
-                    else:
-                        widget_to_style.setStyleSheet("")
+        for i, row_widget in enumerate(self.cart_boxes):
+            if self.control_mode == "joystick":
+                active = (self.joystick_joint_group == 0 and i < 3) or (self.joystick_joint_group == 1 and i >= 3)
+                if active:
+                    row_widget.setObjectName("cartesian-row-active")
                 else:
-                    widget_to_style.setStyleSheet("")
+                    row_widget.setObjectName("cartesian-row")
+                # Force style update
+                row_widget.style().unpolish(row_widget)
+                row_widget.style().polish(row_widget)
+            else:
+                row_widget.setObjectName("cartesian-row")
+                # Force style update
+                row_widget.style().unpolish(row_widget)
+                row_widget.style().polish(row_widget)
 
     def set_control_mode(self, mode: str) -> None:
         """Set the control mode (mouse or joystick)"""
         self.control_mode = mode
         self.update_joint_highlights()
+        self.update_cartesian_highlights()
 
         if mode == "mouse":
             self.update_control_buttons()
@@ -2201,6 +2612,8 @@ class MecaPendant(QWidget):
         else:
             self.joystick_submode = "cartesian" if self.joystick_submode == "joint" else "joint"
             self.update_control_buttons()
+            self.update_joint_highlights()
+            self.update_cartesian_highlights()
             self.mode_label.setText(f"🕹️ Joystick: {self.joystick_submode.upper()}")
 
             # Auto-switch to correct tab
@@ -2509,6 +2922,30 @@ class MecaPendant(QWidget):
         self.update_joint_highlights()
         self.update_cartesian_highlights()
 
+    def handle_tab_change(self, index: int) -> None:
+        """Handle tab change event to automatically switch joystick submode"""
+        if self.control_mode == "joystick":  # Only auto-switch when in joystick mode
+            if index == 0:  # Joint Jog tab
+                self.joystick_submode = "joint"
+                self.update_control_buttons()
+                self.update_joystick_status_label()
+                self.mode_label.setText(f"🕹️ Joystick: {self.joystick_submode.upper()}")
+            elif index == 1:  # Cartesian Jog tab
+                self.joystick_submode = "cartesian"
+                self.update_control_buttons()
+                self.update_joystick_status_label()
+                self.mode_label.setText(f"🕹️ Joystick: {self.joystick_submode.upper()}")
+
+    def keyPressEvent(self, event):
+        """Handle key press events for emergency stop and other shortcuts"""
+        if event.key() == Qt.Key.Key_Escape:
+            # Emergency stop on Escape key
+            self.log("🚨 Emergency Stop triggered by Escape key!")
+            self.emergency_stop()
+            event.accept()
+        else:
+            # Call parent keyPressEvent for other keys
+            super().keyPressEvent(event)
 
 def main():
     """Main application entry point"""

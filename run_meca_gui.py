@@ -15,7 +15,6 @@ from Test import MecaPendant
 def main():
     """
     Main application entry point.
-    Initializes the GUI application with improved error handling.
     """
     try:
         app = QApplication(sys.argv)
