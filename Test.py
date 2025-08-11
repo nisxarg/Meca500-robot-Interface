@@ -13,12 +13,14 @@ from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import QLabel
 from PyQt6.QtWidgets import QStackedLayout
 import sys
+import traceback
 from functools import partial
 from typing import List, Callable, Dict
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QHBoxLayout,
     QSlider, QTextEdit, QGridLayout, QPushButton, QTabWidget,
-    QLineEdit, QGroupBox, QMessageBox, QComboBox, QSpinBox
+    QLineEdit, QGroupBox, QMessageBox, QComboBox, QSpinBox,
+    QToolButton
 )
 from PyQt6.QtCore import Qt, QTimer
 from mecademicpy.robot import Robot
@@ -1095,6 +1097,12 @@ class MecaPendant(QWidget):
         self.reset_button.clicked.connect(self.reset_error)
         ctrl_layout.addWidget(self.reset_button)
 
+        # Resume motion button to recover from paused state without full reset
+        self.resume_button = QPushButton("Resume Motion")
+        self.resume_button.setToolTip("Resume robot motion if it is paused")
+        self.resume_button.clicked.connect(self.resume_motion)
+        ctrl_layout.addWidget(self.resume_button)
+
         self.home_button = QPushButton("Home")
         self.home_button.clicked.connect(self.go_home)
         ctrl_layout.addWidget(self.home_button)
@@ -1122,11 +1130,11 @@ class MecaPendant(QWidget):
         self.vel_input.setStyleSheet("font-size: 12px;")
         self.vel_input.returnPressed.connect(self.manual_velocity_input)
 
-        vel_dec = QPushButton("◀")
+        vel_dec = QToolButton()
+        vel_dec.setArrowType(Qt.ArrowType.LeftArrow)
         vel_dec.setObjectName("decrement-btn")
         vel_dec.setToolTip("Decrease velocity by 10%")
-        vel_dec.setMinimumWidth(35)
-        vel_dec.setMaximumWidth(35)
+        vel_dec.setFixedSize(20, 20)
         vel_dec.clicked.connect(partial(self.adjust_velocity, -10))
 
         self.vel_slider = QSlider(Qt.Orientation.Horizontal)
@@ -1163,11 +1171,11 @@ class MecaPendant(QWidget):
         """)
         self.vel_slider.valueChanged.connect(self.set_velocity)
 
-        vel_inc = QPushButton("▶")
+        vel_inc = QToolButton()
+        vel_inc.setArrowType(Qt.ArrowType.RightArrow)
         vel_inc.setObjectName("increment-btn")
         vel_inc.setToolTip("Increase velocity by 10%")
-        vel_inc.setMinimumWidth(35)
-        vel_inc.setMaximumWidth(35)
+        vel_inc.setFixedSize(20, 20)
         vel_inc.clicked.connect(partial(self.adjust_velocity, 10))
 
         # Set size policies - slider expands, others are fixed
@@ -1197,11 +1205,11 @@ class MecaPendant(QWidget):
         self.inc_input.setStyleSheet("font-size: 12px;")
         self.inc_input.returnPressed.connect(self.manual_increment_input)
 
-        inc_dec = QPushButton("◀")
+        inc_dec = QToolButton()
+        inc_dec.setArrowType(Qt.ArrowType.LeftArrow)
         inc_dec.setObjectName("decrement-btn")
         inc_dec.setToolTip("Decrease increment")
-        inc_dec.setMinimumWidth(35)
-        inc_dec.setMaximumWidth(35)
+        inc_dec.setFixedSize(20, 20)
         inc_dec.clicked.connect(partial(self.adjust_increment, -1))
 
         self.inc_slider = QSlider(Qt.Orientation.Horizontal)
@@ -1238,11 +1246,11 @@ class MecaPendant(QWidget):
         """)
         self.inc_slider.valueChanged.connect(self.update_increment_from_slider)
 
-        inc_inc = QPushButton("▶")
+        inc_inc = QToolButton()
+        inc_inc.setArrowType(Qt.ArrowType.RightArrow)
         inc_inc.setObjectName("increment-btn")
         inc_inc.setToolTip("Increase increment")
-        inc_inc.setMinimumWidth(35)
-        inc_inc.setMaximumWidth(35)
+        inc_inc.setFixedSize(20, 20)
         inc_inc.clicked.connect(partial(self.adjust_increment, 1))
 
         # Set size policies - slider expands, others are fixed
@@ -1650,11 +1658,11 @@ class MecaPendant(QWidget):
                 QWidget.setTabOrder(self.joint_inputs[i-1], input_field)
             
             # Decrement button (left side)
-            left = QPushButton("◀")
+            left = QToolButton()
+            left.setArrowType(Qt.ArrowType.LeftArrow)
             left.setObjectName("decrement-btn")
             left.setToolTip(f"Decrease J{i+1}")
-            left.setMinimumWidth(35)
-            left.setMaximumWidth(35)
+            left.setFixedSize(20, 20)
             
             # Centered slider (middle)
             slider = QSlider(Qt.Orientation.Horizontal)
@@ -1687,11 +1695,11 @@ class MecaPendant(QWidget):
             """)
 
             # Increment button (right side)
-            right = QPushButton("▶")
+            right = QToolButton()
+            right.setArrowType(Qt.ArrowType.RightArrow)
             right.setObjectName("increment-btn")
             right.setToolTip(f"Increase J{i+1}")
-            right.setMinimumWidth(35)
-            right.setMaximumWidth(35)
+            right.setFixedSize(20, 20)
 
             # Store widgets
             self.joint_inputs.append(input_field)
@@ -1773,11 +1781,11 @@ class MecaPendant(QWidget):
                 QWidget.setTabOrder(self.cart_inputs[i-1], input_field)
             
             # Decrement button (left side)
-            left = QPushButton("◀")
+            left = QToolButton()
+            left.setArrowType(Qt.ArrowType.LeftArrow)
             left.setObjectName("decrement-btn")
             left.setToolTip(f"Decrease {axis}")
-            left.setMinimumWidth(35)
-            left.setMaximumWidth(35)
+            left.setFixedSize(20, 20)
             
             # Centered slider (middle)
             slider = QSlider(Qt.Orientation.Horizontal)
@@ -1810,11 +1818,11 @@ class MecaPendant(QWidget):
             """)
 
             # Increment button (right side)
-            right = QPushButton("▶")
+            right = QToolButton()
+            right.setArrowType(Qt.ArrowType.RightArrow)
             right.setObjectName("increment-btn")
             right.setToolTip(f"Increase {axis}")
-            right.setMinimumWidth(35)
-            right.setMaximumWidth(35)
+            right.setFixedSize(20, 20)
 
             # Store widgets
             self.cart_inputs.append(input_field)
@@ -2038,7 +2046,8 @@ class MecaPendant(QWidget):
     def get_gripper_position(self) -> float:
         """Get the current gripper position"""
         try:
-            event = self.robot.SendCustomCommand("GetGripper", expected_responses=[defs.MX_ST_GRIPPER_POSITION])
+            # Use a plain-text expected response to avoid dependency on undefined 'defs'
+            event = self.robot.SendCustomCommand("GetGripper", expected_responses=["Gripper"]) 
             event.wait(timeout=2)  # blocks until response is received
 
             # Now parse the result (use latest known value from robot)
@@ -2297,7 +2306,11 @@ class MecaPendant(QWidget):
         try:
             if self.robot.GetStatusRobot().error_status:
                 self.robot.ResetError()
-                self.robot.ResumeMotion()
+                # Ensure motion is resumed after clearing the error
+                try:
+                    self.robot.ResumeMotion()
+                except Exception:
+                    pass
                 self.log("✅ Error reset.")
 
                 self._error_popup_shown = False
@@ -2311,6 +2324,14 @@ class MecaPendant(QWidget):
                 QMessageBox.information(self, "No Error", "ℹ️ No error is currently active.")
         except Exception as e:
             self.log(f"[ERROR] {e}")
+
+    def resume_motion(self) -> None:
+        """Explicit Resume button handler"""
+        try:
+            self.robot.ResumeMotion()
+            self.log("▶️ Motion resumed.")
+        except Exception as e:
+            self.log(f"[ERROR] Failed to resume motion: {e}")
 
     def log(self, msg: str):
         print(msg)  # This goes through ConsoleInterceptor

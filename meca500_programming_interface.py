@@ -13,7 +13,8 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QComboBox, QLineEdit,
     QDialog, QDialogButtonBox, QFormLayout, QTabWidget,
     QDoubleSpinBox, QSpinBox, QGroupBox, QMessageBox,
-    QMenu, QApplication, QFileDialog, QCheckBox, QToolTip
+    QMenu, QApplication, QFileDialog, QCheckBox, QToolTip,
+    QFrame
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon, QColor
@@ -37,14 +38,29 @@ class StepDialog(QDialog):
         self.step_data = step_data or {}
 
         self.setWindowTitle(f"{'Edit' if step_data else 'Add'} Step")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(480)
+        # Clean windows style (hide legacy context help button)
+        try:
+            self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+        except Exception:
+            pass
 
         self.main_layout = QVBoxLayout()
+        self.main_layout.setContentsMargins(16, 16, 16, 16)
+        self.main_layout.setSpacing(12)
         self.setLayout(self.main_layout)
 
-        # Step type selection
+        # Step type selection with contextual help
+        type_row = QHBoxLayout()
+        type_label = QLabel("Step Type:")
         self.type_combo = QComboBox()
         self.type_combo.addItems(["Move to Position", "Open Gripper", "Close Gripper", "Vacuum On", "Vacuum Off","Set Gripper Position", "Wait", "Home", "Loop Start", "Loop End"])
+        self.movement_help_btn = QPushButton("Movement Help")
+        self.movement_help_btn.setToolTip("Learn about MoveJ/MoveL/MoveP and when to use them")
+        self.movement_help_btn.clicked.connect(lambda: show_movement_type_help(self))
+        type_row.addWidget(type_label)
+        type_row.addWidget(self.type_combo, 1)
+        type_row.addWidget(self.movement_help_btn)
 
         # Set initial selection based on step_type
         if step_type == "move":
@@ -54,11 +70,14 @@ class StepDialog(QDialog):
         elif step_type == "close_gripper":
             self.type_combo.setCurrentIndex(2)
         elif step_type == "set_gripper":
-            self.type_combo.setCurrentIndex(3)
-        elif step_type == "vacuum_on":
-            self.type_combo.setCurrentIndex(4)
-        elif step_type == "vacuum_off":
+            # Index 5 corresponds to "Set Gripper Position"
             self.type_combo.setCurrentIndex(5)
+        elif step_type == "vacuum_on":
+            # Index 3 corresponds to "Vacuum On"
+            self.type_combo.setCurrentIndex(3)
+        elif step_type == "vacuum_off":
+            # Index 4 corresponds to "Vacuum Off"
+            self.type_combo.setCurrentIndex(4)
         elif step_type == "wait":
             self.type_combo.setCurrentIndex(6)
         elif step_type == "home":
@@ -69,13 +88,29 @@ class StepDialog(QDialog):
             self.type_combo.setCurrentIndex(9)
 
         self.type_combo.currentIndexChanged.connect(self.update_form)
-        self.main_layout.addWidget(QLabel("Step Type:"))
-        self.main_layout.addWidget(self.type_combo)
+        self.type_combo.currentIndexChanged.connect(self._update_movement_help_visibility)
+        self.main_layout.addLayout(type_row)
+
+        # Optional human-friendly name for the step
+        self.main_layout.addWidget(QLabel("Name (optional):"))
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("e.g., Move above tray, Pick part, Vacuum on…")
+        self.name_input.setToolTip("Optional friendly label shown in the steps list")
+        if self.step_data and isinstance(self.step_data, dict):
+            existing_name = self.step_data.get("name", "")
+            if isinstance(existing_name, str):
+                self.name_input.setText(existing_name)
+        self.main_layout.addWidget(self.name_input)
 
         # Form container
         self.form_container = QWidget()
         self.form_layout = QVBoxLayout()
         self.form_container.setLayout(self.form_layout)
+        # Separator for visual grouping
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        self.main_layout.addWidget(sep)
         self.main_layout.addWidget(self.form_container)
 
         # Buttons
@@ -83,16 +118,39 @@ class StepDialog(QDialog):
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
         self.main_layout.addWidget(self.button_box)
+        try:
+            self.button_box.button(QDialogButtonBox.StandardButton.Ok).setDefault(True)
+        except Exception:
+            pass
 
         # Initialize form based on step type
         self.update_form()
+        self._update_movement_help_visibility()
+        # Focus the name field for quick labeling
+        self.name_input.setFocus()
+
+    def _update_movement_help_visibility(self):
+        if self.type_combo.currentText() == "Move to Position":
+            self.movement_help_btn.show()
+        else:
+            self.movement_help_btn.hide()
+
+    def clear_layout(self, layout):
+        """Recursively remove all widgets and sub-layouts from a layout."""
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            child_layout = item.layout()
+            if widget is not None:
+                widget.deleteLater()
+            elif child_layout is not None:
+                self.clear_layout(child_layout)
+                child_layout.deleteLater()
 
     def update_form(self):
 
-        for i in reversed(range(self.form_layout.count())):
-            widget = self.form_layout.itemAt(i).widget()
-            if widget:
-                widget.deleteLater()
+        # Clear any previous widgets and nested layouts in the form container
+        self.clear_layout(self.form_layout)
 
         # Get selected type
         selected_type = self.type_combo.currentText()
@@ -117,6 +175,16 @@ class StepDialog(QDialog):
             self.create_loop_start_form()
         elif selected_type == "Loop End":
             self.create_loop_end_form()
+
+    def _with_name(self, data: dict) -> dict:
+        """Attach the optional name field if provided."""
+        try:
+            name = self.name_input.text().strip()
+            if name:
+                data["name"] = name
+        except Exception:
+            pass
+        return data
 
     def create_move_form(self):
 
@@ -345,56 +413,56 @@ class StepDialog(QDialog):
             joints = [spin.value() for spin in self.joint_inputs]
             position = [spin.value() for spin in self.cart_inputs]
             speed = self.speed_spin.value() if hasattr(self, "speed_spin") else 20.0
-            return {
+            return self._with_name({
                 "type": "move",
                 "move_type": move_type,
                 "joints": joints,
                 "position": position,
                 "speed": speed
-            }
+            })
 
         elif selected_type == "Open Gripper":
-            return {
+            return self._with_name({
                 "type": "open_gripper"
-            }
+            })
 
         elif selected_type == "Close Gripper":
-            return {
+            return self._with_name({
                 "type": "close_gripper"
-            }
+            })
 
         elif selected_type == "Set Gripper Position":
-            return {
+            return self._with_name({
                 "type": "set_gripper",
                 "position": self.gripper_pos_spin.value()
-            }
+            })
         elif selected_type == "Vacuum On":
-            return {"type": "vacuum_on"}  # <--- NEW
+            return self._with_name({"type": "vacuum_on"})  # <--- NEW
         elif selected_type == "Vacuum Off":
-            return {"type": "vacuum_off"}
+            return self._with_name({"type": "vacuum_off"})
 
         elif selected_type == "Wait":
-            return {
+            return self._with_name({
                 "type": "wait",
                 "time": self.wait_time_spin.value()
-            }
+            })
 
         elif selected_type == "Home":
-            return {
+            return self._with_name({
                 "type": "home"
-            }
+            })
 
         elif selected_type == "Loop Start":
-            return {
+            return self._with_name({
                 "type": "loop_start",
                 "count": self.loop_count_spin.value(),
                 "current_iteration": 0  # Will be used during execution
-            }
+            })
 
         elif selected_type == "Loop End":
-            return {
+            return self._with_name({
                 "type": "loop_end"
-            }
+            })
 
         return {}
 
@@ -443,6 +511,8 @@ class  ProgrammingInterface(QWidget):
         self.steps_list = QListWidget()
         self.steps_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.steps_list.customContextMenuRequested.connect(self.show_context_menu)
+        # Enable double-click to edit the selected step
+        self.steps_list.itemDoubleClicked.connect(self.on_step_item_double_clicked)
         main_layout.addWidget(self.steps_list)
 
         # Buttons for program management
@@ -646,6 +716,14 @@ class  ProgrammingInterface(QWidget):
             self.program_steps[current_row] = dialog.get_step_data()
             self.update_steps_list()
             self.steps_list.setCurrentRow(current_row)
+
+    def on_step_item_double_clicked(self, item):
+        """Handle double-click on a step to open the editor"""
+        row = self.steps_list.row(item)
+        if row < 0:
+            return
+        self.steps_list.setCurrentRow(row)
+        self.edit_step()
 
     def delete_step(self):
         """Delete the selected step"""
@@ -1061,6 +1139,7 @@ class  ProgrammingInterface(QWidget):
         except Exception as e:
             self.log_to_console(f"Vacuum ON error: {e}")
             self.show_error("Error during vacuum ON: " + str(e))
+            raise
 
     def execute_vacuum_off_step(self):
         """Deactivate vacuum (valve off)"""
@@ -1072,6 +1151,7 @@ class  ProgrammingInterface(QWidget):
         except Exception as e:
             self.log_to_console(f"Vacuum OFF error: {e}")
             self.show_error("Error during vacuum OFF: " + str(e))
+            raise
     def check_command_completion(self):
         """Check if the current command has completed"""
         if not self.running:
@@ -1147,6 +1227,8 @@ class  ProgrammingInterface(QWidget):
             user_msg = self.friendly_robot_error_message(e)
             self.log_to_console(user_msg)
             self.show_error(user_msg)
+            # Propagate to caller so the program halts
+            raise
 
     def execute_open_gripper_step(self):
         """Execute an open gripper step"""
@@ -1309,6 +1391,11 @@ class  ProgrammingInterface(QWidget):
 
     def get_step_description(self, step):
         """Get a human-readable description of a step"""
+        # Prefer user-provided friendly name if present
+        name = step.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+
         step_type = step.get("type", "")
 
         if step_type == "move":
@@ -1538,6 +1625,16 @@ class  ProgrammingInterface(QWidget):
                     except Exception as act_err:
                         self.log_to_console(f"Could not activate robot: {act_err}")
                         # Don't raise, just log the error
+
+                    # Ensure motion is not paused after an error
+                    try:
+                        self.log_to_console("Resuming motion...")
+                        self.robot.ResumeMotion()
+                        time.sleep(0.2)
+                        self.log_to_console("Motion resumed")
+                    except Exception as resume_err:
+                        # Not fatal; log and continue
+                        self.log_to_console(f"Resume warning: {resume_err}")
 
                     # Update status
                     self.status_label.setText("Robot error reset complete")

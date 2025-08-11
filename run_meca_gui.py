@@ -15,7 +15,7 @@ from Test import MecaPendant
 def main():
     """
     Main application entry point.
-    """
+    """ 
     try:
         app = QApplication(sys.argv)
 
@@ -33,7 +33,7 @@ def main():
         # Catch any unhandled exceptions to prevent silent crashes
         print(f"Fatal error in main application: {e}")
         traceback.print_exc()
-        sys.exit(1)
+        sys.exit(1)     
 
 
 if __name__ == "__main__":
